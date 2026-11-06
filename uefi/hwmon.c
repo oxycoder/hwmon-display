@@ -244,6 +244,99 @@ static void read_pci(void)
     emit("|STORAGE_CTRL="); emit_u(disks);
 }
 
+/* ---------- USB serial: CDC-ACM (ESP32-S3 / Pico native USB) or FTDI (QEMU) ---- */
+
+#include "usbio.h"
+
+static int g_usb_sent = 0;
+
+static EFI_STATUS usb_ctrl(EFI_USB_IO_PROTOCOL *io, UINT8 type, UINT8 req, UINT16 val, UINT16 idx,
+                           void *data, UINT16 len)
+{
+    EFI_USB_DEVICE_REQUEST r = { type, req, val, idx, len };
+    UINT32 st = 0;
+    return uefi_call_wrapper(io->UsbControlTransfer, 7, io, &r,
+                             len ? EfiUsbDataOut : EfiUsbNoData, 1000, data, len, &st);
+}
+
+static int usb_bulk_write(EFI_USB_IO_PROTOCOL *io, UINT8 ep, const char *s)
+{
+    UINTN len = 0; while (s[len]) len++;
+    UINT32 st = 0;
+    /* copy to pool memory: bulk buffers must not be in our image's .data on some hosts */
+    char *buf = AllocatePool(len);
+    if (!buf) return 0;
+    CopyMem(buf, s, len);
+    EFI_STATUS r = uefi_call_wrapper(io->UsbBulkTransfer, 6, io, ep, buf, &len, 2000, &st);
+    FreePool(buf);
+    return !EFI_ERROR(r);
+}
+
+/* First bulk OUT endpoint of this interface, or 0. */
+static UINT8 bulk_out_ep(EFI_USB_IO_PROTOCOL *io, const EFI_USB_INTERFACE_DESCRIPTOR *ifd)
+{
+    for (UINT8 i = 0; i < ifd->NumEndpoints; i++) {
+        EFI_USB_ENDPOINT_DESCRIPTOR ep;
+        if (EFI_ERROR(uefi_call_wrapper(io->UsbGetEndpointDescriptor, 3, io, i, &ep))) continue;
+        if ((ep.Attributes & 3) == 2 && !(ep.EndpointAddress & 0x80)) return ep.EndpointAddress;
+    }
+    return 0;
+}
+
+static void usb_try_handle(EFI_HANDLE h, EFI_GUID *guid, const char *line)
+{
+    EFI_USB_IO_PROTOCOL *io;
+    if (EFI_ERROR(uefi_call_wrapper(BS->HandleProtocol, 3, h, guid, (void **)&io))) return;
+    EFI_USB_DEVICE_DESCRIPTOR dd; EFI_USB_INTERFACE_DESCRIPTOR ifd;
+    if (EFI_ERROR(uefi_call_wrapper(io->UsbGetDeviceDescriptor, 2, io, &dd))) return;
+    if (EFI_ERROR(uefi_call_wrapper(io->UsbGetInterfaceDescriptor, 2, io, &ifd))) return;
+
+    /* FTDI (0403:6001 etc.) — what QEMU's "usb-serial" emulates. Vendor requests, bulk OUT. */
+    if (dd.IdVendor == 0x0403) {
+        UINT8 ep = bulk_out_ep(io, &ifd); if (!ep) return;
+        usb_ctrl(io, 0x40, 0x00, 0x0000, 0, NULL, 0);   /* SIO_RESET                */
+        usb_ctrl(io, 0x40, 0x03, 26,     0, NULL, 0);   /* SET_BAUDRATE 3M/26=115200 */
+        usb_ctrl(io, 0x40, 0x04, 0x0008, 0, NULL, 0);   /* SET_DATA: 8N1            */
+        usb_ctrl(io, 0x40, 0x02, 0x0000, 0, NULL, 0);   /* SET_FLOW_CTRL: none      */
+        if (usb_bulk_write(io, ep, line)) g_usb_sent++;
+        return;
+    }
+    /* CDC-ACM data interface (class 0x0A). The control interface is by convention
+       the one just before it; TinyUSB (ESP32-S3, Pico) uses comm=N, data=N+1. */
+    if (ifd.InterfaceClass == 0x0A) {
+        UINT8 ep = bulk_out_ep(io, &ifd); if (!ep) return;
+        UINT16 comm = ifd.InterfaceNumber ? ifd.InterfaceNumber - 1 : 0;
+        UINT8 coding[7] = { 0x00, 0xC2, 0x01, 0x00, 0, 0, 8 };  /* 115200, 1 stop, no parity, 8 bits */
+        usb_ctrl(io, 0x21, 0x20, 0, comm, coding, 7);           /* SET_LINE_CODING        */
+        usb_ctrl(io, 0x21, 0x22, 0x0003, comm, NULL, 0);        /* SET_CONTROL_LINE_STATE: DTR|RTS */
+        if (usb_bulk_write(io, ep, line)) g_usb_sent++;
+    }
+}
+
+/* Some firmware only enumerates USB devices on demand; ask it to connect everything. */
+static void usb_connect_all(void)
+{
+    UINTN n = 0; EFI_HANDLE *hs = NULL;
+    if (EFI_ERROR(uefi_call_wrapper(BS->LocateHandleBuffer, 5, AllHandles, NULL, NULL, &n, &hs))) return;
+    for (UINTN i = 0; i < n; i++) uefi_call_wrapper(BS->ConnectController, 4, hs[i], NULL, NULL, TRUE);
+    FreePool(hs);
+    /* give the bus driver a moment to enumerate */
+    uefi_call_wrapper(BS->Stall, 1, 500000);
+}
+
+static void usb_send(const char *line)
+{
+    EFI_GUID guid = EFI_USB_IO_PROTOCOL_GUID;
+    UINTN n = 0; EFI_HANDLE *hs = NULL;
+    for (int pass = 0; pass < 3 && !g_usb_sent; pass++) {
+        if (pass) usb_connect_all();
+        EFI_STATUS st = uefi_call_wrapper(BS->LocateHandleBuffer, 5, ByProtocol, &guid, NULL, &n, &hs);
+        if (EFI_ERROR(st)) continue;
+        for (UINTN i = 0; i < n; i++) usb_try_handle(hs[i], &guid, line);
+        FreePool(hs);
+    }
+}
+
 /* ---------- chainload --------------------------------------------------- */
 
 #define CHAINLOAD_PATH L"\\EFI\\BOOT\\BOOTX64.EFI"
@@ -279,10 +372,12 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     read_pci();
     emit("\n");
 
-    uart_puts(g_line);
+    uart_puts(g_line);          /* COM port / PCIe serial card */
+    usb_send(g_line);           /* USB-serial display, if one is plugged in */
 
     /* mirror on the console so you can see it even without the display */
     Print(L"hwmon.efi: %a", g_line);
+    Print(L"hwmon.efi: uart@0x%x, usb devices written: %d\n", g_uart, g_usb_sent);
 
     /* keep it readable for a moment, then hand off */
     uefi_call_wrapper(BS->Stall, 1, 1500000);

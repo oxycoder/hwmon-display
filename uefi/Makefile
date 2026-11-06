@@ -8,6 +8,7 @@ OVMF_VARS := /usr/share/OVMF/OVMF_VARS_4M.fd
 
 CFLAGS  := -I$(EFIINC) -I$(EFIINC)/$(ARCH) -I$(EFIINC)/protocol \
            -fpic -fno-stack-protector -fshort-wchar -mno-red-zone -maccumulate-outgoing-args \
+           -ffreestanding -fno-builtin -fno-plt -fno-tree-loop-distribute-patterns \
            -DGNU_EFI_USE_MS_ABI -Wall -O2
 LDFLAGS := -nostdlib -znocombreloc -T $(LDS) -shared -Bsymbolic -L$(EFILIB) $(CRT0)
 
@@ -39,6 +40,20 @@ run: esp
 	  -drive format=raw,file=fat:rw:esp \
 	  -smbios type=2,manufacturer="ASUS",product="PRIME B650-PLUS" \
 	  -smbios type=17,speed=6000 \
+	  -display none -serial file:/tmp/ser.log -no-reboot
+
+# USB path: COM1 goes to the console log, the frame must arrive via the emulated
+# USB-serial (FTDI) device on an xHCI controller → /tmp/usb.log
+run-usb: esp
+	cp $(OVMF_VARS) /tmp/ovmf_vars.fd
+	rm -f /tmp/usb.log
+	timeout 40 qemu-system-x86_64 -machine q35 -m 2048 -smp 2 -cpu max \
+	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	  -drive if=pflash,format=raw,file=/tmp/ovmf_vars.fd \
+	  -drive format=raw,file=fat:rw:esp \
+	  -device qemu-xhci,id=xhci \
+	  -chardev file,id=usb0,path=/tmp/usb.log \
+	  -device usb-serial,bus=xhci.0,chardev=usb0 \
 	  -display none -serial file:/tmp/ser.log -no-reboot
 
 clean:

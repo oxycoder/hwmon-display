@@ -3,18 +3,32 @@
 One small LCD shows hardware info from the moment the firmware runs (before any OS)
 and keeps updating once the OS is up. Works with Linux, Windows, or no OS at all.
 
+Two physical links are supported; the protocol and display code are the same for both.
+
 ```
+A) USB-C (single cable, needs an MCU with native USB: ESP32-S3, RP2040/Pico)
+ PC firmware (UEFI)  ──┐
+   hwmon.efi           ├── USB (CDC-ACM, 115200) ──────────────────── ESP32-S3 + 2.8" LCD
+ PC OS (Linux)        ─┘   "KEY=VAL|KEY=VAL\n"                          (power + data)
+   hwmond (Go)
+
+B) COM port (any MCU, e.g. classic ESP32 "Cheap Yellow Display")
  PC firmware (UEFI)  ──┐                          ┌─────────────┐
    hwmon.efi           ├── COM1 (16550, 115200) ──┤ MAX3232     ├── ESP32 + 2.8" LCD
- PC OS (Linux)        ─┘   "KEY=VAL|KEY=VAL\n"    │ RS232→TTL   │   (Cheap Yellow Display)
+ PC OS (Linux)        ─┘                          │ RS232→TTL   │   + USB for power
    hwmond (Go)                                    └─────────────┘
 ```
+
+`hwmon.efi` always writes to the 16550 (COM1 or a PCIe serial card) *and* to any USB-serial
+device it finds (CDC-ACM data interface, or FTDI — the latter is what QEMU emulates), so one
+binary covers both builds.
 
 ## Layout
 
 | Path | What | Status |
 |---|---|---|
-| `uefi/hwmon.c` | UEFI app (GNU-EFI, C). Reads CPUID, SMBIOS, memory map, PCI; writes to the 16550 directly; chainloads the real bootloader. | **tested in QEMU/OVMF** |
+| `uefi/hwmon.c` | UEFI app (GNU-EFI, C). Reads CPUID, SMBIOS, memory map, PCI; writes to the 16550 directly and to USB-serial via `EFI_USB_IO_PROTOCOL`; chainloads the real bootloader. | **tested in QEMU/OVMF, serial + USB** |
+| `uefi/usbio.h` | `EFI_USB_IO_PROTOCOL` definition (gnu-efi doesn't ship one). | |
 | `daemon/main.go` | Linux daemon. Reads hwmon/procfs, writes the same protocol at 1 Hz. No deps. | **tested over a pty** |
 | `display/core/` | Platform-independent parser + renderer (320×240). Shared by the simulator and the ESP32. | **tested** |
 | `display/sim/` | Host simulator: reads a serial device/file, renders frames to PNG. | **tested** |
@@ -37,13 +51,24 @@ Unknown keys are ignored; missing keys render as `--`. Anything not starting wit
 
 ```
 sudo apt install gnu-efi qemu-system-x86 ovmf socat golang gcc
-./test-e2e.sh            # → out/frame-0001-UEFI.png, out/frame-000N-OS.png
+./test-e2e.sh            # COM-port link  → out/frame-0001-UEFI.png, out/frame-000N-OS.png
+./test-e2e.sh usb        # USB link: QEMU xHCI + emulated USB-serial device
+make -C uefi run-usb     # just the UEFI app over USB; frame lands in /tmp/usb.log
 ```
 
 To try the display firmware on a *real* CYD before wiring the PC: flash the sketch, then
 `cat display/sim/sample.txt > /dev/ttyUSB0` — the USB serial accepts the same protocol.
 
 ## Deploy on the real PC
+
+**USB-C build (ESP32-S3 / Pico):** plug the board into any USB port — that's the wiring.
+Daemon: `hwmond -port /dev/ttyACM0`. Verify the board's USB-C is the MCU's *native* USB
+(`lsusb` shows `303a:` Espressif or `2e8a:` Raspberry Pi), not a CH340 (`1a86:`) — a CH340 only
+does power + flashing, so use the COM build below with it.
+If the firmware doesn't enumerate USB before boot, check for "Fast Boot" / "USB legacy" BIOS
+settings; the app already asks the firmware to connect all controllers and retries.
+
+**COM-port build:**
 
 1. **Check for a COM port**: `dmesg | grep ttyS` (want `0x3F8 irq 4`), or board manual → "COM header".
    No header → any PCIe serial card; `hwmon.efi` finds it via PCI class 07:00 and uses its BAR0.
@@ -65,3 +90,7 @@ To try the display firmware on a *real* CYD before wiring the PC: flash the sket
 - QEMU: use `-chardev serial,id=s0,path=/dev/pts/N -serial chardev:s0` to drive a pty; the
   bare `-serial /dev/pts/N` form does not.
 - OVMF echoes its console onto COM1; real boards usually don't, but the parser tolerates it.
+- Build freestanding (`-ffreestanding -fno-builtin -fno-plt`): otherwise GCC turns a byte loop
+  into a `strlen@plt` call, the PLT isn't in the PE, and execution jumps into `.data`.
+- `EFI_USB_IO_PROTOCOL_GUID` is `2B2F68D6-0CD2-44CF-8E8B-BBA20B1B5B75` (last byte 0x75).
+- QEMU's `usb-serial` is full-speed; it works on `qemu-xhci`, not on `usb-ehci`.

@@ -19,14 +19,22 @@ sleep 0.5
 display/sim/sim "$OUT/ttyDISPLAY" "$OUT" --scale 2 > "$OUT/display.log" & SIM=$!
 trap 'kill $SIM $SOCAT 2>/dev/null || true' EXIT
 
-echo "== boot phase: UEFI app in QEMU, COM1 -> cable"
+MODE=${1:-serial}      # serial: COM1 (16550) -> cable   |   usb: USB-serial device on xHCI -> cable
 cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/ovmf_vars.fd"
-timeout 10 qemu-system-x86_64 -machine q35 -m 4096 -smp 4 -cpu max \
+if [ "$MODE" = usb ]; then
+  echo "== boot phase: UEFI app in QEMU, USB-serial (xHCI) -> cable; COM1 to a log file"
+  LINK=(-device qemu-xhci,id=xhci -chardev serial,id=s0,path="$OUT/ttyPC" -device usb-serial,bus=xhci.0,chardev=s0
+        -serial file:"$OUT/com1.log")
+else
+  echo "== boot phase: UEFI app in QEMU, COM1 -> cable"
+  LINK=(-chardev serial,id=s0,path="$OUT/ttyPC" -serial chardev:s0)
+fi
+timeout 15 qemu-system-x86_64 -machine q35 -m 4096 -smp 4 -cpu max \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file="$OUT/ovmf_vars.fd" \
   -drive format=raw,file=fat:rw:uefi/esp \
   -smbios type=2,manufacturer="ASUS",product="PRIME B650-PLUS" -smbios type=17,speed=6000 \
-  -display none -chardev serial,id=s0,path="$OUT/ttyPC" -serial chardev:s0 -no-reboot >/dev/null 2>&1 || true
+  -display none "${LINK[@]}" -no-reboot >/dev/null 2>&1 || true
 
 echo "== OS phase: daemon -> same cable"
 timeout 3.5 daemon/hwmond -port "$OUT/ttyPC" || true
