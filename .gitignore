@@ -1,0 +1,7 @@
+out/
+uefi/*.o
+uefi/*.so
+uefi/*.efi
+uefi/esp/
+daemon/hwmond
+display/sim/sim
