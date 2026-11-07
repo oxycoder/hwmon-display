@@ -29,13 +29,16 @@ func envOr(k, d string) string {
 }
 
 var (
-	kernel32              = syscall.NewLazyDLL("kernel32.dll")
-	procGetSystemTimes    = kernel32.NewProc("GetSystemTimes")
-	procGlobalMemoryStatx = kernel32.NewProc("GlobalMemoryStatusEx")
-	procSetCommState      = kernel32.NewProc("SetCommState")
-	procGetCommState      = kernel32.NewProc("GetCommState")
-	procSetCommTimeouts   = kernel32.NewProc("SetCommTimeouts")
-	procEscapeCommFunc    = kernel32.NewProc("EscapeCommFunction")
+	kernel32               = syscall.NewLazyDLL("kernel32.dll")
+	procGetSystemTimes     = kernel32.NewProc("GetSystemTimes")
+	procGlobalMemoryStatx  = kernel32.NewProc("GlobalMemoryStatusEx")
+	procSetCommState       = kernel32.NewProc("SetCommState")
+	procGetCommState       = kernel32.NewProc("GetCommState")
+	procSetCommTimeouts    = kernel32.NewProc("SetCommTimeouts")
+	procEscapeCommFunc     = kernel32.NewProc("EscapeCommFunction")
+	procGetLogicalDrives   = kernel32.NewProc("GetLogicalDrives")
+	procGetDriveType       = kernel32.NewProc("GetDriveTypeW")
+	procGetDiskFreeSpaceEx = kernel32.NewProc("GetDiskFreeSpaceExW")
 )
 
 // ---------- static -----------------------------------------------------------
@@ -111,6 +114,38 @@ func memMB() (used, total int, ok bool) {
 func cpuTemp() int { return lhm().cpuTemp }
 func fanRPM() int  { return lhm().fan }
 
+// disks: "C:62:931,D:40:1863" = letter : used% : total GB, fixed drives only.
+func disks() string {
+	r, _, _ := procGetLogicalDrives.Call()
+	var parts []string
+	for i := 0; i < 26 && len(parts) < 4; i++ {
+		if r&(1<<uint(i)) == 0 {
+			continue
+		}
+		root := string(rune('A'+i)) + `:\`
+		p, _ := syscall.UTF16PtrFromString(root)
+		if t, _, _ := procGetDriveType.Call(uintptr(unsafe.Pointer(p))); t != 3 { // DRIVE_FIXED
+			continue
+		}
+		var free, total, totalFree uint64
+		if ok, _, _ := procGetDiskFreeSpaceEx.Call(uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&free)),
+			uintptr(unsafe.Pointer(&total)), uintptr(unsafe.Pointer(&totalFree))); ok == 0 || total == 0 {
+			continue
+		}
+		used := int(100 * (total - totalFree) / total)
+		parts = append(parts, fmt.Sprintf("%c:%d:%d", 'A'+i, used, total/(1000*1000*1000)))
+	}
+	return strings.Join(parts, ",")
+}
+
+func diskTemps() string {
+	var ss []string
+	for _, t := range lhm().diskTemps {
+		ss = append(ss, strconv.Itoa(t))
+	}
+	return strings.Join(ss, ",")
+}
+
 // ---------- LibreHardwareMonitor JSON ------------------------------------------
 
 type lhmNode struct {
@@ -122,6 +157,7 @@ type lhmNode struct {
 
 type lhmReading struct {
 	cpuTemp, fan int
+	diskTemps    []int
 	at           time.Time
 }
 
@@ -141,6 +177,7 @@ func lhm() lhmReading {
 		if json.NewDecoder(resp.Body).Decode(&root) == nil {
 			r.cpuTemp = findCPUTemp(&root)
 			r.fan = findFan(&root)
+			findDiskTemps(&root, &r.diskTemps)
 		}
 	}
 	lhmCache = r
@@ -159,49 +196,102 @@ func numOf(v string) int { // "45.3 °C" / "1,180 RPM" -> 45 / 1180
 	return int(x + 0.5)
 }
 
-// findCPUTemp: node whose ImageURL is the CPU icon → "Temperatures" → best sensor.
-func findCPUTemp(n *lhmNode) int {
-	if strings.Contains(n.ImageURL, "cpu.png") {
-		for i := range n.Children {
-			if n.Children[i].Text == "Temperatures" {
-				best := -1
-				for _, s := range n.Children[i].Children {
-					v := numOf(s.Value)
-					t := s.Text
-					if strings.Contains(t, "Package") || strings.Contains(t, "Tctl") || strings.Contains(t, "Tdie") || t == "CPU Core" {
-						return v
-					}
-					if v > best {
-						best = v
-					}
-				}
-				return best
-			}
-		}
+// cpuNodes collects every hardware node with the CPU icon, skipping LHM's
+// "Virtual" pseudo-devices, with the one matching the registry CPU name first.
+func cpuNodes(n *lhmNode, out *[]*lhmNode) {
+	if strings.Contains(n.ImageURL, "cpu.png") && !strings.Contains(strings.ToLower(n.Text), "virtual") {
+		*out = append(*out, n)
 	}
 	for i := range n.Children {
-		if v := findCPUTemp(&n.Children[i]); v >= 0 {
-			return v
+		cpuNodes(&n.Children[i], out)
+	}
+}
+
+func findCPUTemp(root *lhmNode) int {
+	var nodes []*lhmNode
+	cpuNodes(root, &nodes)
+	model := strings.ToLower(cpuModel())
+	for pass := 0; pass < 2; pass++ {
+		for _, n := range nodes {
+			name := strings.ToLower(n.Text)
+			if pass == 0 && !(strings.Contains(model, name) || strings.Contains(name, firstWords(model, 3))) {
+				continue
+			}
+			if v := tempOf(n, []string{"Package", "Tctl", "Tdie", "CPU Core", "Core Average"}); v >= 0 {
+				return v
+			}
 		}
 	}
 	return -1
 }
 
-// findFan: first non-zero fan under any "Fans" group (motherboard first in LHM's tree).
-func findFan(n *lhmNode) int {
-	if n.Text == "Fans" {
-		for _, s := range n.Children {
-			if v := numOf(s.Value); v > 0 {
-				return v
+func firstWords(s string, n int) string {
+	f := strings.Fields(s)
+	if len(f) > n {
+		f = f[:n]
+	}
+	return strings.Join(f, " ")
+}
+
+// tempOf: the node's "Temperatures" group → first sensor matching prefs, else the max.
+func tempOf(n *lhmNode, prefs []string) int {
+	for i := range n.Children {
+		if n.Children[i].Text != "Temperatures" {
+			continue
+		}
+		best := -1
+		for _, s := range n.Children[i].Children {
+			v := numOf(s.Value)
+			for _, p := range prefs {
+				if strings.Contains(s.Text, p) {
+					return v
+				}
+			}
+			if v > best {
+				best = v
 			}
 		}
+		return best
 	}
-	for i := range n.Children {
-		if v := findFan(&n.Children[i]); v > 0 {
+	return -1
+}
+
+// findFan: a fan labelled "CPU" if there is one, else the first spinning fan.
+func findFan(root *lhmNode) int {
+	var fans []lhmNode
+	collectFans(root, &fans)
+	for _, f := range fans {
+		if strings.Contains(strings.ToUpper(f.Text), "CPU") && numOf(f.Value) > 0 {
+			return numOf(f.Value)
+		}
+	}
+	for _, f := range fans {
+		if v := numOf(f.Value); v > 0 {
 			return v
 		}
 	}
 	return 0
+}
+
+func collectFans(n *lhmNode, out *[]lhmNode) {
+	if n.Text == "Fans" {
+		*out = append(*out, n.Children...)
+	}
+	for i := range n.Children {
+		collectFans(&n.Children[i], out)
+	}
+}
+
+// findDiskTemps: temperatures of storage devices (hdd icon), in tree order.
+func findDiskTemps(n *lhmNode, out *[]int) {
+	if strings.Contains(n.ImageURL, "hdd.png") {
+		if v := tempOf(n, []string{"Temperature"}); v >= 0 {
+			*out = append(*out, v)
+		}
+	}
+	for i := range n.Children {
+		findDiskTemps(&n.Children[i], out)
+	}
 }
 
 // ---------- serial port -------------------------------------------------------

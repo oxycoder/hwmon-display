@@ -81,6 +81,12 @@ func dynamicInfo(c *cpuLoad) string {
 	if used, total, ok := memMB(); ok {
 		parts = append(parts, "RAM_USED_MB="+strconv.Itoa(used), "RAM_MB="+strconv.Itoa(total))
 	}
+	if d := disks(); d != "" {
+		parts = append(parts, "DISK="+d)
+	}
+	if t := diskTemps(); t != "" {
+		parts = append(parts, "DISK_T="+t)
+	}
 	return strings.Join(parts, "|")
 }
 

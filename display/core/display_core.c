@@ -149,9 +149,9 @@ static void render_os(const dc_state *s, const dc_gfx *g)
     text(g, 8, 24, buf, C_DIM, 1);
     g->fill_rect(0, 36, DC_W, 1, C_PANEL);
 
-    /* big numbers: temp / load / fan */
+    /* big numbers: temp / load / cpu fan */
     int col = DC_W / 3;
-    const char *hdr[3] = { "CPU TEMP", "CPU LOAD", "FAN" };
+    const char *hdr[3] = { "CPU TEMP", "CPU LOAD", "CPU FAN" };
     char vals[3][16]; dc_color cols[3];
     if (temp >= 0) snprintf(vals[0], 16, "%d", temp); else snprintf(vals[0], 16, "--");
     if (load >= 0) snprintf(vals[1], 16, "%d", load); else snprintf(vals[1], 16, "--");
@@ -168,21 +168,47 @@ static void render_os(const dc_state *s, const dc_gfx *g)
         text(g, x + (int)strlen(vals[i]) * 6 * sz + 2, 84, unit[i], C_DIM, 1);
     }
 
-    /* bars */
-    int y = 110;
-    text(g, 8, y, "LOAD", C_DIM, 1);
-    bar(g, 64, y, DC_W - 72, 8, load, cols[1]);
-    y += 18;
-    text(g, 8, y, "TEMP", C_DIM, 1);
-    bar(g, 64, y, DC_W - 72, 8, temp, cols[0]);
-    y += 18;
+    /* RAM */
+    int y = 106;
     text(g, 8, y, "RAM", C_DIM, 1);
     int rpct = (used >= 0 && total > 0) ? used * 100 / total : 0;
-    bar(g, 64, y, DC_W - 72, 8, rpct, C_ACCENT);
-    y += 14;
+    bar(g, 56, y, 150, 8, rpct, C_ACCENT);
     if (total > 0) {
         snprintf(buf, sizeof buf, "%.1f / %.1f GB", used / 1024.0, total / 1024.0);
-        text(g, 64, y, buf, C_DIM, 1);
+        text(g, 214, y, buf, C_DIM, 1);
+    }
+
+    /* DISKS: "C:62:931,D:40:1863" = name : used% : total GB; temps in DISK_T="38,35" */
+    y += 20;
+    const char *dk = dc_get(s, "DISK");
+    const char *dt = dc_get(s, "DISK_T");
+    if (*dk) {
+        text(g, 8, y, "DISKS", C_DIM, 1);
+        y += 14;
+        char list[64]; snprintf(list, sizeof list, "%s", dk);
+        char tlist[32]; snprintf(tlist, sizeof tlist, "%s", dt);
+        char *save = NULL, *tsave = NULL;
+        char *tok = strtok_r(list, ",", &save);
+        char *ttok = strtok_r(tlist, ",", &tsave);
+        for (int n = 0; tok && n < 4 && y < DC_H - 30; n++) {
+            char name[16] = ""; int pct = -1, gb = -1;
+            char *c1 = strchr(tok, ':'); char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+            if (c1) { snprintf(name, sizeof name, "%.*s", (int)(c1 - tok), tok); pct = atoi(c1 + 1); }
+            if (c2) gb = atoi(c2 + 1);
+            if (!strcmp(name, "/")) snprintf(name, sizeof name, "root");
+            if (name[0] >= 'A' && name[0] <= 'Z' && name[1] == 0) snprintf(name, sizeof name, "%c:", name[0]);
+            char lbl[12]; fit(lbl, sizeof lbl, name, 6);
+            text(g, 8, y, lbl, C_TEXT, 1);
+            dc_color dc = pct < 0 ? C_DIM : pct < 80 ? C_ACCENT : pct < 92 ? C_WARN : C_HOT;
+            bar(g, 56, y, 150, 8, pct, dc);
+            if (gb >= 1000) snprintf(buf, sizeof buf, "%d%%  %.1f TB", pct, gb / 1000.0);
+            else            snprintf(buf, sizeof buf, "%d%%  %d GB", pct, gb);
+            if (ttok) { size_t l = strlen(buf); snprintf(buf + l, sizeof buf - l, "  %sC", ttok); }
+            text(g, 214, y, buf, C_DIM, 1);
+            y += 14;
+            tok = strtok_r(NULL, ",", &save);
+            ttok = ttok ? strtok_r(NULL, ",", &tsave) : NULL;
+        }
     }
 
     /* footer */

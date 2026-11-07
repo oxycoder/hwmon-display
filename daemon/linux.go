@@ -43,6 +43,43 @@ func osName() string {
 	return "Linux"
 }
 
+// disks: "/:62:931,/home:40:1863" = mount : used% : total GB for the main filesystems.
+func disks() string {
+	var parts []string
+	for _, m := range []string{"/", "/home", "/data"} {
+		var st syscall.Statfs_t
+		if syscall.Statfs(m, &st) != nil || st.Blocks == 0 {
+			continue
+		}
+		total := uint64(st.Bsize) * st.Blocks
+		avail := uint64(st.Bsize) * st.Bavail
+		if m != "/" && sameDevice(m) {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d:%d", m, 100*(total-avail)/total, total/(1000*1000*1000)))
+	}
+	return strings.Join(parts, ",")
+}
+
+func sameDevice(m string) bool {
+	var a, b syscall.Stat_t
+	return syscall.Stat("/", &a) == nil && syscall.Stat(m, &b) == nil && a.Dev == b.Dev
+}
+
+func diskTemps() string {
+	var ss []string
+	dirs, _ := filepath.Glob("/sys/class/hwmon/hwmon*")
+	for _, d := range dirs {
+		switch readTrim(d + "/name") {
+		case "nvme", "drivetemp":
+			if v := readInt(d + "/temp1_input"); v > 0 {
+				ss = append(ss, strconv.Itoa(v/1000))
+			}
+		}
+	}
+	return strings.Join(ss, ",")
+}
+
 // cpuTemp returns the package/die temperature in °C, or -1 if nothing found.
 // Prefers coretemp (Intel) / k10temp (AMD) / zenpower; falls back to any temp1.
 func cpuTemp() int {

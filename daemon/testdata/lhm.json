@@ -1,8 +1,115 @@
-{"id":0,"Text":"Sensor","Children":[{"id":1,"Text":"TT-PC","Children":[
- {"id":2,"Text":"ASUS PRIME B650-PLUS","ImageURL":"images_icon/mainboard.png","Children":[
-   {"id":3,"Text":"Nuvoton NCT6798D","ImageURL":"images_icon/chip.png","Children":[
-     {"id":4,"Text":"Voltages","Children":[{"id":5,"Text":"Vcore","Value":"1.213 V"}]},
-     {"id":6,"Text":"Fans","Children":[{"id":7,"Text":"Fan #1","Value":"0 RPM"},{"id":8,"Text":"Fan #2","Value":"1,180 RPM"}]}]}]},
- {"id":9,"Text":"AMD Ryzen 7 7800X3D","ImageURL":"images_icon/cpu.png","Children":[
-   {"id":10,"Text":"Load","Children":[{"id":11,"Text":"CPU Total","Value":"37.2 %"}]},
-   {"id":12,"Text":"Temperatures","Children":[{"id":13,"Text":"Core (Tctl/Tdie)","Value":"68.4 °C"},{"id":14,"Text":"CCD1 (Tdie)","Value":"61.0 °C"}]}]}]}]}
+{
+ "id": 0,
+ "Text": "Sensor",
+ "Children": [
+  {
+   "id": 1,
+   "Text": "TT-PC",
+   "Children": [
+    {
+     "id": 2,
+     "Text": "ASUS PRIME B650-PLUS",
+     "ImageURL": "images_icon/mainboard.png",
+     "Children": [
+      {
+       "id": 3,
+       "Text": "Nuvoton NCT6798D",
+       "ImageURL": "images_icon/chip.png",
+       "Children": [
+        {
+         "id": 4,
+         "Text": "Voltages",
+         "Children": [
+          {
+           "id": 5,
+           "Text": "Vcore",
+           "Value": "1.213 V"
+          }
+         ]
+        },
+        {
+         "id": 6,
+         "Text": "Fans",
+         "Children": [
+          {
+           "Text": "Chassis Fan #1",
+           "Value": "812 RPM"
+          },
+          {
+           "Text": "CPU Fan",
+           "Value": "1,180 RPM"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Text": "Virtual",
+     "ImageURL": "images_icon/cpu.png",
+     "Children": [
+      {
+       "Text": "Temperatures",
+       "Children": [
+        {
+         "Text": "Virtual temp",
+         "Value": "25.0 °C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "id": 9,
+     "Text": "AMD Ryzen 7 7800X3D",
+     "ImageURL": "images_icon/cpu.png",
+     "Children": [
+      {
+       "id": 10,
+       "Text": "Load",
+       "Children": [
+        {
+         "id": 11,
+         "Text": "CPU Total",
+         "Value": "37.2 %"
+        }
+       ]
+      },
+      {
+       "id": 12,
+       "Text": "Temperatures",
+       "Children": [
+        {
+         "id": 13,
+         "Text": "Core (Tctl/Tdie)",
+         "Value": "68.4 °C"
+        },
+        {
+         "id": 14,
+         "Text": "CCD1 (Tdie)",
+         "Value": "61.0 °C"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "Text": "Samsung SSD 980 PRO 1TB",
+     "ImageURL": "images_icon/hdd.png",
+     "Children": [
+      {
+       "Text": "Temperatures",
+       "Children": [
+        {
+         "Text": "Temperature",
+         "Value": "38.0 °C"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
