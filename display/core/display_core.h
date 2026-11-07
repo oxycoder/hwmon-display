@@ -10,6 +10,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define DC_W 320
 #define DC_H 240
 #define DC_MAX_FIELDS 24
@@ -45,5 +49,9 @@ int         dc_feed(dc_state *s, uint8_t byte, uint32_t now_ms);
 const char *dc_get(const dc_state *s, const char *key);       /* "" if absent */
 /* Redraw the whole screen from the current state. */
 void        dc_render(const dc_state *s, const dc_gfx *g, uint32_t now_ms);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
