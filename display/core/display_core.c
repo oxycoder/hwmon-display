@@ -28,6 +28,7 @@ static void parse_line(dc_state *s)
 
 int dc_feed(dc_state *s, uint8_t b, uint32_t now_ms)
 {
+    s->rx_bytes++;
     if (b == '\r') return 0;
     if (b == '\n') {
         s->line[s->linelen] = 0;
@@ -197,8 +198,11 @@ void dc_render(const dc_state *s, const dc_gfx *g, uint32_t now_ms)
     g->fill_rect(0, 0, DC_W, DC_H, C_BG);
 
     if (s->frames == 0) {
+        char buf[64];
         text(g, 8, 100, "HW MONITOR", C_ACCENT, 3);
         text(g, 8, 130, "waiting for serial data @115200", C_DIM, 1);
+        snprintf(buf, sizeof buf, "up %lus   rx %lu bytes", (unsigned long)(now_ms / 1000), (unsigned long)s->rx_bytes);
+        text(g, 8, 150, buf, C_DIM, 1);
         return;
     }
     if (now_ms - s->last_rx_ms > 5000) {

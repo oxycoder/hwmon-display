@@ -40,11 +40,16 @@ case "${1:-build}" in
     echo "flashed; the board re-enumerates in ~2 s";;
   test)
     PORT=${2:?usage: ./build.sh test /dev/cu.usbmodemXXXX}
-    stty -f "$PORT" 115200 raw 2>/dev/null || stty -F "$PORT" 115200 raw
-    sleep 0.2
-    echo 'SRC=UEFI|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|RAM_MB=32768|BOARD=ASUS PRIME B650-PLUS|BIOS=American Megatrends 3024|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125|STORAGE_CTRL=2' > "$PORT"
-    sleep 2
-    echo 'SRC=OS|HOST=tt-desktop|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|OS=Ubuntu 24.04.5 LTS|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900' > "$PORT"
-    echo "sent a BOOT frame, then an OS frame; after 5 s of silence the NO SIGNAL banner appears";;
+    # Hold the port open for the whole test: opening/closing it toggles DTR/RTS,
+    # which the S3's USB-Serial/JTAG peripheral can interpret as a reset.
+    exec 3<>"$PORT"
+    stty -f "$PORT" 115200 raw -hupcl 2>/dev/null || stty -F "$PORT" 115200 raw -hupcl
+    sleep 1
+    echo 'SRC=UEFI|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|RAM_MB=32768|BOARD=ASUS PRIME B650-PLUS|BIOS=American Megatrends 3024|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125|STORAGE_CTRL=2' >&3
+    echo "sent BOOT frame (screen should show the boot page now)"; sleep 3
+    echo 'SRC=OS|HOST=tt-desktop|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|OS=Ubuntu 24.04.5 LTS|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900' >&3
+    echo "sent OS frame (screen should show the OS page now)"; sleep 3
+    exec 3>&-
+    echo "port closed; NO SIGNAL banner appears after 5 s of silence";;
   *) echo "usage: $0 [setup|build|flash PORT|test PORT]"; exit 2;;
 esac

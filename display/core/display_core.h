@@ -40,6 +40,7 @@ typedef struct {
     char     line[DC_MAX_LINE];
     int      linelen;
     uint32_t frames;            /* frames received so far */
+    uint32_t rx_bytes;          /* raw bytes received (debug) */
     uint32_t last_rx_ms;        /* for the "no signal" state */
 } dc_state;
 

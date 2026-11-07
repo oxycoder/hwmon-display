@@ -61,6 +61,7 @@ void loop()
     if (!redraw && now - lastStaleCheck > 1000) {           // paint the NO SIGNAL banner if the PC went quiet
         lastStaleCheck = now;
         if (state.frames && now - state.last_rx_ms > 5000) redraw = true;
+        if (!state.frames) redraw = true;                   // idle page: refresh uptime / rx counter
     }
     if (redraw) dc_render(&state, &gfx, now);
     delay(5);
