@@ -21,19 +21,31 @@
 #define AUX_TX_PIN    21
 
 TFT_eSPI tft;
+TFT_eSprite frame(&tft);          // full-screen off-screen buffer: no flicker, one push per frame
+static bool useSprite = false;
 HardwareSerial auxSerial(1);
 static dc_state state;
 
-static void gfx_fill_rect(int x, int y, int w, int h, dc_color c) { tft.fillRect(x, y, w, h, c); }
+static void gfx_fill_rect(int x, int y, int w, int h, dc_color c)
+{
+    if (useSprite) frame.fillRect(x, y, w, h, c); else tft.fillRect(x, y, w, h, c);
+}
 static void gfx_draw_text(int x, int y, const char *s, dc_color fg, dc_color bg, int size)
 {
-    tft.setTextFont(1);
-    tft.setTextSize(size);
-    tft.setTextColor(fg, bg);
-    tft.setCursor(x, y);
-    tft.print(s);
+    TFT_eSPI &g = useSprite ? (TFT_eSPI &)frame : tft;
+    g.setTextFont(1);
+    g.setTextSize(size);
+    g.setTextColor(fg, bg);
+    g.setCursor(x, y);
+    g.print(s);
 }
 static const dc_gfx gfx = { gfx_fill_rect, gfx_draw_text };
+
+static void render(uint32_t now)
+{
+    dc_render(&state, &gfx, now);
+    if (useSprite) frame.pushSprite(0, 0);
+}
 
 void setup()
 {
@@ -46,8 +58,10 @@ void setup()
 
     tft.init();
     tft.setRotation(1);                                     // landscape 320x240, USB-C on the left
+    frame.setColorDepth(16);
+    useSprite = frame.createSprite(DC_W, DC_H) != nullptr;  // 150 KB; falls back to direct drawing if no RAM
     dc_init(&state);
-    dc_render(&state, &gfx, millis());
+    render(millis());
 }
 
 void loop()
@@ -57,12 +71,14 @@ void loop()
     while (Serial.available())    redraw |= dc_feed(&state, Serial.read(), now);
     while (auxSerial.available()) redraw |= dc_feed(&state, auxSerial.read(), now);
 
-    static uint32_t lastStaleCheck = 0;
-    if (!redraw && now - lastStaleCheck > 1000) {           // paint the NO SIGNAL banner if the PC went quiet
-        lastStaleCheck = now;
-        if (state.frames && now - state.last_rx_ms > 5000) redraw = true;
+    static uint32_t lastTick = 0;
+    static bool staleShown = false;
+    if (redraw) staleShown = false;
+    if (!redraw && now - lastTick > 1000) {
+        lastTick = now;
         if (!state.frames) redraw = true;                   // idle page: refresh uptime / rx counter
+        else if (!staleShown && now - state.last_rx_ms > 5000) { redraw = true; staleShown = true; }  // NO SIGNAL, painted once
     }
-    if (redraw) dc_render(&state, &gfx, now);
+    if (redraw) render(now);
     delay(5);
 }
