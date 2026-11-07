@@ -29,7 +29,7 @@ binary covers both builds.
 |---|---|---|
 | `uefi/hwmon.c` | UEFI app (GNU-EFI, C). Reads CPUID, SMBIOS, memory map, PCI; writes to the 16550 directly and to USB-serial via `EFI_USB_IO_PROTOCOL`; chainloads the real bootloader. | **tested in QEMU/OVMF, serial + USB** |
 | `uefi/usbio.h` | `EFI_USB_IO_PROTOCOL` definition (gnu-efi doesn't ship one). | |
-| `daemon/main.go` | Linux daemon. Reads hwmon/procfs, writes the same protocol at 1 Hz. No deps. | **tested over a pty** |
+| `daemon/` | OS daemon, no deps. `linux.go`: hwmon/procfs. `windows.go`: kernel32 for load/RAM, LibreHardwareMonitor's web server for temp/fan, COM port via SetCommState. | Linux **tested over a pty**; Windows cross-built, parser unit-tested |
 | `display/core/` | Platform-independent parser + renderer (320×240). Shared by the simulator and the ESP32. | **tested** |
 | `display/sim/` | Host simulator: reads a serial device/file, renders frames to PNG. | **tested** |
 | `display/esp32_es3c28p/` | **The board in use.** Sketch + `build.sh` for the ESP32-S3 2.8" ES3C28P (ILI9341V, native USB). | syntax-checked; flash with `build.sh` |
@@ -86,8 +86,13 @@ settings; the app already asks the firmware to connect all controllers and retri
    `efibootmgr -c -d /dev/nvme0n1 -p 1 -L hwmon -l '\EFI\hwmon\hwmon.efi' -u '\EFI\ubuntu\shimx64.efi'`
    (the `-u` string is the loader it chainloads; Windows: `\EFI\Microsoft\Boot\bootmgfw.efi`).
    Secure Boot: sign with `sbctl sign uefi/hwmon.efi` or disable.
-4. **Daemon**: `go build -o /usr/local/bin/hwmond ./daemon` + a systemd unit running
-   `hwmond -port /dev/ttyS0`. (Windows port: same protocol, read LibreHardwareMonitor instead of hwmon.)
+4. **Daemon (Linux)**: `go build -o /usr/local/bin/hwmond ./daemon` + a systemd unit running
+   `hwmond -port /dev/ttyACM0` (or `/dev/ttyS0` for the COM build).
+
+   **Daemon (Windows)**: `GOOS=windows go build -o hwmond.exe ./daemon`, then `hwmond.exe -port COM5`.
+   For temperatures and fan speed, run LibreHardwareMonitor with *Options → Remote Web Server → Run*
+   (port 8085; override with `HWMON_LHM_URL`). Autostart: Task Scheduler, "At log on", run
+   `hwmond.exe -port COM5` hidden. Find the port in Device Manager → Ports (USB Serial Device).
 5. **ESP32**: Arduino IDE → ESP32 Dev Module, TFT_eSPI with `User_Setup_CYD.h`, flash `esp32_cyd.ino`.
 
 ## Notes / gotchas learned
