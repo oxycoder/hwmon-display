@@ -32,7 +32,8 @@ binary covers both builds.
 | `daemon/main.go` | Linux daemon. Reads hwmon/procfs, writes the same protocol at 1 Hz. No deps. | **tested over a pty** |
 | `display/core/` | Platform-independent parser + renderer (320×240). Shared by the simulator and the ESP32. | **tested** |
 | `display/sim/` | Host simulator: reads a serial device/file, renders frames to PNG. | **tested** |
-| `display/esp32_cyd/` | Arduino sketch for the ESP32-2432S028 + TFT_eSPI config. | syntax-checked; needs the board to flash |
+| `display/esp32_es3c28p/` | **The board in use.** Sketch + `build.sh` for the ESP32-S3 2.8" ES3C28P (ILI9341V, native USB). | syntax-checked; flash with `build.sh` |
+| `display/esp32_cyd/` | Arduino sketch for the classic ESP32-2432S028 (COM build) + TFT_eSPI config. | syntax-checked |
 | `test-e2e.sh` | Whole pipeline with zero hardware. | |
 
 ## Protocol
@@ -61,7 +62,14 @@ To try the display firmware on a *real* CYD before wiring the PC: flash the sket
 
 ## Deploy on the real PC
 
-**USB-C build (ESP32-S3 / Pico):** plug the board into any USB port — that's the wiring.
+**USB-C build (ES3C28P / ESP32-S3):**
+```
+brew install arduino-cli
+display/esp32_es3c28p/build.sh setup                       # once
+display/esp32_es3c28p/build.sh && display/esp32_es3c28p/build.sh flash /dev/cu.usbmodemXXXX
+display/esp32_es3c28p/build.sh test /dev/cu.usbmodemXXXX   # boot frame + OS frame on the LCD
+```
+Then plug the board into any USB port of the PC — that's the wiring.
 Daemon: `hwmond -port /dev/ttyACM0`. Verify the board's USB-C is the MCU's *native* USB
 (`lsusb` shows `303a:` Espressif or `2e8a:` Raspberry Pi), not a CH340 (`1a86:`) — a CH340 only
 does power + flashing, so use the COM build below with it.
