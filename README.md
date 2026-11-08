@@ -42,11 +42,21 @@ One line per frame, `\n`-terminated, must start with `SRC=`:
 
 ```
 SRC=UEFI|CPU=...|THREADS=16|RAM_MB=32768|BOARD=...|BIOS=...|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125|STORAGE_CTRL=2
-SRC=OS|HOST=tt-desktop|CPU=...|THREADS=16|OS=Ubuntu 24.04|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,home:40:1863,USB:5:64,Window:71:931|DISK_T=38,35|GPU=Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|VRAM_USED_MB=7500|VRAM_MB=24576
+SRC=OS|HOST=tt-desktop|CPU=...|THREADS=16|OS=Ubuntu 24.04|LOAD=37|TEMP=68|FAN=1180|CPU_W=88|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,home:40:1863,USB:5:64,Window:71:931|DISK_T=38,35|GPU=Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|GPU_W=210|VRAM_USED_MB=7500|VRAM_MB=24576
 ```
 
 Unknown keys are ignored; missing keys render as `--`. Anything not starting with `SRC=`
 (firmware console echo, noise) is dropped. After 5 s of silence the display shows a NO SIGNAL banner.
+
+`CPU_W` / `GPU_W` are the CPU package and GPU board power in watts. The OS page shows them
+as a third column next to temperature and load, and the footer shows their sum (`PWR 298W`)
+next to the CPU fan. Linux: CPU power from the RAPL energy counters under
+`/sys/class/powercap` (root-readable since kernel 5.10; `zenpower` as the fallback), GPU power
+from the amdgpu hwmon node. Windows: GPU power from the vendor library (ADL `PMLog` ASIC power
+or NVML); CPU package power from the RAPL energy MSRs (AMD `0xC001029B`, Intel `0x611`) read
+through the ASUS firmware's `ASUSHW` MSR method, which needs an elevated `hwmond` like the
+Tctl path; on other boards it comes from LibreHardwareMonitor when that is running, otherwise
+the cell shows `--`.
 
 `DISK` is `label:used%:GB`, up to four volumes, labels cut to 6 chars, root first then in mount
 order. On Linux that is every mounted block-device filesystem (ext4/xfs/btrfs, ntfs/ntfs3/ntfs-3g,

@@ -53,7 +53,7 @@ case "${1:-build}" in
     sleep 1
     echo 'SRC=UEFI|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|RAM_MB=32768|BOARD=ASUS PRIME B650-PLUS|BIOS=American Megatrends 3024|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125|STORAGE_CTRL=2' >&3
     echo "sent BOOT frame (screen should show the boot page now)"; sleep 3
-    echo 'SRC=OS|HOST=tt-desktop|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|OS=Ubuntu 24.04.5 LTS|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,/home:40:1863|DISK_T=38,35|GPU=AMD Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|VRAM_USED_MB=7500|VRAM_MB=24576' >&3
+    echo 'SRC=OS|HOST=tt-desktop|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|OS=Ubuntu 24.04.5 LTS|LOAD=37|TEMP=68|FAN=1180|CPU_W=88|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,/home:40:1863|DISK_T=38,35|GPU=AMD Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|GPU_W=210|VRAM_USED_MB=7500|VRAM_MB=24576' >&3
     echo "sent OS frame (screen should show the OS page now)"; sleep 3
     exec 3>&-
     echo "port closed; NO SIGNAL banner appears after 5 s of silence";;

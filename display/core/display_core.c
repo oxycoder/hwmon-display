@@ -174,8 +174,9 @@ static void cell(const dc_gfx *g, int x, int y, const char *label, const char *v
     text(g, x + (int)strlen(val) * 6 * sz + 2, y + 36, unit, C_DIM, 1); /* unit sits on the baseline */
 }
 
-static void temp_val(char *out, int sz, int t)   { if (t >= 0) snprintf(out, sz, "%d", t); else snprintf(out, sz, "--"); }
+static void num_val(char *out, int sz, int t)    { if (t >= 0) snprintf(out, sz, "%d", t); else snprintf(out, sz, "--"); }
 static dc_color load_color(int l) { return l < 0 ? C_DIM : l < 70 ? C_OK : l < 90 ? C_WARN : C_HOT; }
+static dc_color power_color(int w) { return w < 0 ? C_DIM : C_ACCENT; }
 
 /* Memory cell: "14.4" big + "/32GB" small; colour by fill percentage. */
 static void mem_cell(const dc_gfx *g, int x, int y, const char *label, int used_mb, int total_mb)
@@ -201,6 +202,7 @@ static void render_os(const dc_state *s, const dc_gfx *g)
     int used = ival(s, "RAM_USED_MB", -1), total = ival(s, "RAM_MB", -1);
     int gload = ival(s, "GPU_LOAD", -1), gtemp = ival(s, "GPU_TEMP", -1);
     int vused = ival(s, "VRAM_USED_MB", -1), vtotal = ival(s, "VRAM_MB", -1);
+    int cpuw = ival(s, "CPU_W", -1), gpuw = ival(s, "GPU_W", -1);   /* package power, watts */
 
     /* header: "<CPU> - <GPU>" on one line (52 chars max at 6px/char) */
     char cpu[64], gpu[64];
@@ -219,16 +221,19 @@ static void render_os(const dc_state *s, const dc_gfx *g)
     }
     g->fill_rect(0, 18, DC_W, 1, C_PANEL);
 
-    /* row 1: CPU temp / CPU load / RAM used;  row 2: GPU temp / GPU load / VRAM used */
-    const int cx[3] = { 8, 104, 200 };
+    /* row 1: CPU temp / load / power / RAM used;  row 2: GPU temp / load / power / VRAM used.
+       Four columns at 18px digits: "68"+C, "100"+%, "450"+W, "14.4"+"/32GB" all fit their slot. */
+    const int cx[4] = { 8, 66, 136, 210 };
     int y = 26;
-    temp_val(v, sizeof v, temp);  cell(g, cx[0], y, "CPU TEMP", v, temp_color(temp), 4, "C");
-    temp_val(v, sizeof v, load);  cell(g, cx[1], y, "CPU LOAD", v, load_color(load), 4, "%");
-    mem_cell(g, cx[2], y, "RAM USED", used, total);
+    num_val(v, sizeof v, temp);  cell(g, cx[0], y, "CPU TEMP", v, temp_color(temp), 3, "C");
+    num_val(v, sizeof v, load);  cell(g, cx[1], y, "CPU LOAD", v, load_color(load), 3, "%");
+    num_val(v, sizeof v, cpuw);  cell(g, cx[2], y, "CPU PWR", v, power_color(cpuw), 3, "W");
+    mem_cell(g, cx[3], y, "RAM USED", used, total);
     y += 54;
-    temp_val(v, sizeof v, gtemp); cell(g, cx[0], y, "GPU TEMP", v, temp_color(gtemp), 4, "C");
-    temp_val(v, sizeof v, gload); cell(g, cx[1], y, "GPU LOAD", v, load_color(gload), 4, "%");
-    mem_cell(g, cx[2], y, "VRAM USED", vused, vtotal);
+    num_val(v, sizeof v, gtemp); cell(g, cx[0], y, "GPU TEMP", v, temp_color(gtemp), 3, "C");
+    num_val(v, sizeof v, gload); cell(g, cx[1], y, "GPU LOAD", v, load_color(gload), 3, "%");
+    num_val(v, sizeof v, gpuw);  cell(g, cx[2], y, "GPU PWR", v, power_color(gpuw), 3, "W");
+    mem_cell(g, cx[3], y, "VRAM USED", vused, vtotal);
     y += 54;
     g->fill_rect(0, y - 2, DC_W, 1, C_PANEL);
 
@@ -265,16 +270,18 @@ static void render_os(const dc_state *s, const dc_gfx *g)
         }
     }
 
-    /* footer: OS name | CPU fan | frame counter */
+    /* footer: OS name | CPU fan | total (CPU + GPU) power, right-aligned */
     g->fill_rect(0, DC_H - 14, DC_W, 14, C_PANEL);
-    fit(buf, sizeof buf, dc_get(s, "OS"), 30);
+    fit(buf, sizeof buf, dc_get(s, "OS"), 26);
     g->draw_text(8, DC_H - 11, buf, C_DIM, C_PANEL, 1);
     if (fan > 0) {
         snprintf(buf, sizeof buf, "FAN %drpm", fan);
-        g->draw_text(200, DC_H - 11, buf, C_DIM, C_PANEL, 1);
+        g->draw_text(170, DC_H - 11, buf, C_DIM, C_PANEL, 1);
     }
-    snprintf(buf, sizeof buf, "#%lu", (unsigned long)s->frames);
-    g->draw_text(DC_W - 8 - (int)strlen(buf) * 6, DC_H - 11, buf, C_DIM, C_PANEL, 1);
+    if (cpuw >= 0 || gpuw >= 0) {
+        snprintf(buf, sizeof buf, "PWR %dW", (cpuw > 0 ? cpuw : 0) + (gpuw > 0 ? gpuw : 0));
+        g->draw_text(DC_W - 8 - (int)strlen(buf) * 6, DC_H - 11, buf, C_TEXT, C_PANEL, 1);
+    }
 }
 
 void dc_render(const dc_state *s, const dc_gfx *g, uint32_t now_ms)

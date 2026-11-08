@@ -5,8 +5,9 @@ package main
 // LibreHardwareMonitor web-server JSON (Options → Remote Web Server → Run,
 // default port 8085). Optional: only consulted for readings WMI cannot supply
 // (CPU temperature on boards without an ACPI thermal zone, fan RPM, GPU
-// temperature, disk temperatures without admin rights). HWMON_LHM_URL overrides
-// the URL; "off" disables the fallback entirely.
+// temperature, disk temperatures without admin rights, CPU package power,
+// GPU power when the vendor library has none). HWMON_LHM_URL overrides the
+// URL; "off" disables the fallback entirely.
 
 import (
 	"encoding/json"
@@ -38,6 +39,8 @@ type lhmReading struct {
 	gpuLoad      int
 	gpuMemUsed   int
 	gpuMemTotal  int
+	gpuPower     int // board power, W
+	cpuPower     int // package power, W
 	at           time.Time
 }
 
@@ -56,7 +59,7 @@ func lhm() lhmReading {
 	if time.Since(lhmCache.at) < 900*time.Millisecond {
 		return lhmCache
 	}
-	r := lhmReading{cpuTemp: -1, fan: 0, gpuTemp: -1, gpuLoad: -1, gpuMemUsed: -1, gpuMemTotal: -1, at: time.Now()}
+	r := lhmReading{cpuTemp: -1, fan: 0, gpuTemp: -1, gpuLoad: -1, gpuMemUsed: -1, gpuMemTotal: -1, gpuPower: -1, cpuPower: -1, at: time.Now()}
 	if strings.EqualFold(lhmURL, "off") || time.Now().Before(lhmRetryAt) {
 		lhmCache = r
 		return r
@@ -73,6 +76,7 @@ func lhm() lhmReading {
 	if json.NewDecoder(resp.Body).Decode(&root) == nil {
 		lhmAvailable = true
 		r.cpuTemp, r.cpuDie = findCPUTemp(&root)
+		r.cpuPower = findCPUPower(&root)
 		r.fan = findFan(&root)
 		findDiskTemps(&root, &r.diskTemps)
 		findGPU(&root, &r)
@@ -132,6 +136,54 @@ func findCPUTemp(root *lhmNode) (temp int, die bool) {
 		return v, false
 	}
 	return -1, false
+}
+
+// findCPUPower: the CPU package power in W from the CPU node's "Powers" group
+// (AMD "Package", Intel "CPU Package"; else the cores' rail), or -1.
+func findCPUPower(root *lhmNode) int {
+	var nodes []*lhmNode
+	cpuNodes(root, &nodes)
+	model := strings.ToLower(cpuModel())
+	for pass := 0; pass < 2; pass++ {
+		for _, n := range nodes {
+			name := strings.ToLower(n.Text)
+			if pass == 0 && !(strings.Contains(model, name) || strings.Contains(name, firstWords(model, 3))) {
+				continue
+			}
+			if v := powerOf(n, []string{"Package", "Cores", "Core"}); v >= 0 {
+				return v
+			}
+		}
+	}
+	return -1
+}
+
+// powerOf: the node's "Powers" group → the first preference that names a
+// sensor with a value, else the largest one. -1 without a group or values.
+func powerOf(n *lhmNode, prefs []string) int {
+	for i := range n.Children {
+		if n.Children[i].Text != "Powers" {
+			continue
+		}
+		sensors := n.Children[i].Children
+		for _, p := range prefs {
+			for _, s := range sensors {
+				if strings.Contains(s.Text, p) {
+					if v := numOf(s.Value); v >= 0 {
+						return v
+					}
+				}
+			}
+		}
+		best := -1
+		for _, s := range sensors {
+			if v := numOf(s.Value); v > best {
+				best = v
+			}
+		}
+		return best
+	}
+	return -1
 }
 
 func findSuperIOCPUTemp(n *lhmNode) int {
@@ -239,6 +291,9 @@ func findGPU(root *lhmNode, out *lhmReading) {
 	out.gpuName = gpuNode.Text
 	out.gpuTemp = tempOf(gpuNode, []string{"GPU Core", "Core", "Hot Spot"})
 	out.gpuLoad = loadOf(gpuNode, []string{"GPU Core", "D3D 3D"})
+	// Whole-board power first: AMD/NVIDIA "GPU Package", Intel "GPU Power";
+	// AMD's PPT limit sensor and the core rail only when nothing else is there.
+	out.gpuPower = powerOf(gpuNode, []string{"GPU Package", "GPU Power", "GPU PPT", "GPU Core"})
 	out.gpuMemUsed, out.gpuMemTotal = gpuMemOf(gpuNode)
 }
 

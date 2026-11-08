@@ -206,6 +206,9 @@ func dynamicInfo(c *cpuLoad) string {
 		"TEMP=" + strconv.Itoa(cpuTemp()),
 		"FAN=" + strconv.Itoa(fanRPM()),
 	}
+	if w := cpuPower(); w >= 0 {
+		parts = append(parts, "CPU_W="+strconv.Itoa(w))
+	}
 	if used, total, ok := memMB(); ok {
 		parts = append(parts, "RAM_USED_MB="+strconv.Itoa(used), "RAM_MB="+strconv.Itoa(total))
 	}

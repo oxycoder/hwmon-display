@@ -34,13 +34,16 @@ type reading struct {
 	gpuLoad      int
 	gpuMemUsed   int
 	gpuMemTotal  int
+	gpuPower     int    // board power, W
+	cpuPower     int    // package power, W
 	src          string // which sources contributed, for the tray/status line
 }
 
-func cpuTemp() int { return sample().cpuTemp }
-func fanRPM() int  { return sample().fan }
+func cpuTemp() int  { return sample().cpuTemp }
+func fanRPM() int   { return sample().fan }
+func cpuPower() int { return sample().cpuPower }
 
-// gpuInfo: "GPU=name|GPU_TEMP=61|GPU_LOAD=37|VRAM_USED_MB=7500|VRAM_MB=16384";
+// gpuInfo: "GPU=name|GPU_TEMP=61|GPU_LOAD=37|GPU_W=180|VRAM_USED_MB=7500|VRAM_MB=16384";
 // "" when no usable GPU is present.
 func gpuInfo() string {
 	r := sample()
@@ -53,6 +56,9 @@ func gpuInfo() string {
 	}
 	if r.gpuLoad >= 0 {
 		parts = append(parts, "GPU_LOAD="+strconv.Itoa(r.gpuLoad))
+	}
+	if r.gpuPower >= 0 {
+		parts = append(parts, "GPU_W="+strconv.Itoa(r.gpuPower))
 	}
 	if r.gpuMemUsed >= 0 && r.gpuMemTotal > 0 {
 		parts = append(parts, "VRAM_USED_MB="+strconv.Itoa(r.gpuMemUsed), "VRAM_MB="+strconv.Itoa(r.gpuMemTotal))
@@ -144,6 +150,14 @@ func collect() reading {
 			}
 		}
 	}
+	// Power: GPU from the vendor library, CPU from the RAPL MSRs through the
+	// ASUS firmware (elevated); LHM fills whichever is still missing.
+	if r.cpuPower < 0 {
+		r.cpuPower = l.cpuPower
+	}
+	if r.gpuPower < 0 {
+		r.gpuPower = l.gpuPower
+	}
 	r.src = strings.Join(srcs, "+")
 	return r
 }
@@ -174,17 +188,19 @@ const (
 // wmiSample reads everything the OS exposes without a driver or helper.
 func wmiSample() reading {
 	g := gpuStatic()
-	r := reading{cpuTemp: thermalZoneTemp(), fan: 0, gpuTemp: -1, gpuLoad: -1, gpuMemUsed: -1,
+	r := reading{cpuTemp: thermalZoneTemp(), fan: 0, gpuTemp: -1, gpuLoad: -1, gpuMemUsed: -1, gpuPower: -1, cpuPower: -1,
 		gpuName: g.name, gpuMemTotal: g.memTotalMB, diskTemps: storageTemps()}
 	if g.name != "" {
 		r.gpuLoad, r.gpuMemUsed = gpuPerf()
 		r.gpuTemp = gpuVendorTemp()
+		r.gpuPower = gpuVendorPower()
 	}
 	// The ASUS path can reach the CPU's own Tctl, which beats an ACPI zone.
 	if t, die := asusCPUTemp(); die || (t >= 0 && r.cpuTemp < 0) {
 		r.cpuTemp, r.cpuDie = t, die
 	}
 	r.fan = asusFanRPM()
+	r.cpuPower = asusCPUPower()
 	return r
 }
 

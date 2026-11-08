@@ -72,6 +72,54 @@ func TestLHMCPUTempPrefersDie(t *testing.T) {
 	}
 }
 
+// powers builds a hardware node with one "Powers" group.
+func powers(text, hwid, img string, sensors ...string) lhmNode {
+	g := lhmNode{Text: "Powers"}
+	for i := 0; i+1 < len(sensors); i += 2 {
+		g.Children = append(g.Children, lhmNode{Text: sensors[i], Value: sensors[i+1]})
+	}
+	return lhmNode{Text: text, HardwareId: hwid, ImageURL: img, Children: []lhmNode{g}}
+}
+
+// TestLHMPower: CPU package power from the CPU node (AMD "Package", Intel
+// "CPU Package", never the per-core rails), GPU board power from the GPU
+// node's "GPU Package" rather than the core rail or the PPT limit.
+func TestLHMPower(t *testing.T) {
+	amd := powers("AMD Ryzen 9 3900X", "/amdcpu/0", "images_icon/cpu.png",
+		"Core #1 (SMU)", "12.3 W", "Package", "88.4 W", "Core (SMU)", "61.0 W")
+	gpu := powers("AMD Radeon RX 5600 XT", "/gpu-amd/0", "images_icon/ati.png",
+		"GPU Core", "95.2 W", "GPU PPT", "160.0 W", "GPU Package", "142.6 W")
+	root := lhmNode{Text: "Sensor", Children: []lhmNode{{Text: "TUNG", Children: []lhmNode{amd, gpu}}}}
+
+	if got := findCPUPower(&root); got != 88 {
+		t.Errorf("cpuPower = %d, want 88 (Package)", got)
+	}
+	var r lhmReading
+	findGPU(&root, &r)
+	if r.gpuPower != 143 {
+		t.Errorf("gpuPower = %d, want 143 (GPU Package)", r.gpuPower)
+	}
+
+	intel := powers("Intel Core i7-12700K", "/intelcpu/0", "images_icon/cpu.png",
+		"CPU Package", "65.5 W", "CPU Cores", "50.1 W", "CPU Graphics", "1.2 W", "CPU Memory", "4.0 W")
+	nv := powers("NVIDIA GeForce RTX 4070", "/gpu-nvidia/0", "images_icon/nvidia.png", "GPU Package", "199.7 W")
+	root.Children[0].Children = []lhmNode{intel, nv}
+	if got := findCPUPower(&root); got != 66 {
+		t.Errorf("cpuPower = %d, want 66 (CPU Package)", got)
+	}
+	r = lhmReading{}
+	findGPU(&root, &r)
+	if r.gpuPower != 200 {
+		t.Errorf("gpuPower = %d, want 200", r.gpuPower)
+	}
+
+	// No Powers group anywhere: -1, not 0.
+	root.Children[0].Children = []lhmNode{temps("Intel Core i7-12700K", "/intelcpu/0", "images_icon/cpu.png", "CPU Package", "45.0 °C")}
+	if got := findCPUPower(&root); got != -1 {
+		t.Errorf("cpuPower without a Powers group = %d, want -1", got)
+	}
+}
+
 func TestPickCPUTemp(t *testing.T) {
 	cases := []struct {
 		native    int
@@ -90,6 +138,35 @@ func TestPickCPUTemp(t *testing.T) {
 	for _, c := range cases {
 		if got, die := pickCPUTemp(c.native, c.nativeDie, c.l); got != c.want || die != c.wantDie {
 			t.Errorf("pickCPUTemp(%d, %v, %+v) = %d, %v, want %d, %v", c.native, c.nativeDie, c.l, got, die, c.want, c.wantDie)
+		}
+	}
+}
+
+// TestRAPL: the Zen 2 power-unit MSR reads 0xA1003 (ESU 16 -> 15.26 µJ per
+// step); 6,553,600 steps in one second is 100 W; a counter rollover unwraps.
+func TestRAPL(t *testing.T) {
+	j := raplJoulesPerStep(0xA1003)
+	if j != 1.0/65536 {
+		t.Fatalf("joules per step = %g, want 1/65536", j)
+	}
+	if got := raplJoulesPerStep(0); got != 0 {
+		t.Errorf("ESU 0 -> %g, want 0 (unavailable)", got)
+	}
+	cases := []struct {
+		prev, cur uint32
+		dt        float64
+		want      int
+	}{
+		{1000, 1000 + 6553600, 1.0, 100},
+		{1000, 1000 + 6553600, 2.0, 50},
+		{0xFFFFFF00, 0x00000100 + 6553600 - 0x100, 1.0, 100}, // wrapped
+		{1000, 1000, 1.0, -1},                                // no energy consumed: implausible
+		{1000, 2000, 0.01, -1},                               // interval too short
+		{1000, 1000 + 6553600*30, 1.0, -1},                   // 3 kW: implausible
+	}
+	for _, c := range cases {
+		if got := raplWatts(c.prev, c.cur, j, c.dt); got != c.want {
+			t.Errorf("raplWatts(%d, %d, %.2fs) = %d, want %d", c.prev, c.cur, c.dt, got, c.want)
 		}
 	}
 }

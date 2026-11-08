@@ -2,8 +2,8 @@
 
 package main
 
-// CPU temperature and fan RPM on ASUS boards without any kernel driver of our
-// own: ASUS firmware exposes an ACPI-WMI class "ASUSHW" (root\WMI, GUID
+// CPU temperature, fan RPM and CPU package power on ASUS boards without any
+// kernel driver of our own: ASUS firmware exposes an ACPI-WMI class "ASUSHW" (root\WMI, GUID
 // 466747a0-70ec-11de-8a39-0800200c9a66) whose asio_hw_fun21 method reads one
 // register of the Nuvoton NCT67xx Super I/O hardware monitor; the ACPI code in
 // the BIOS does the port I/O. It is the same interface the Linux
@@ -27,8 +27,10 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -215,6 +217,113 @@ func (m *namedMutex) unlock() {
 	if m.h != 0 {
 		procReleaseMutex.Call(m.h)
 	}
+}
+
+// ---------- CPU package power through the RAPL energy MSRs ----------------------
+//
+// asio_hw_fun15 reads a model-specific register (Index in, DataHi/DataLo out).
+// Both vendors keep a running package energy counter in an MSR, in units of
+// 2^-ESU joules where ESU comes from the power-unit MSR: AMD Zen
+// 0xC0010299 / 0xC001029B (the "Package" power LibreHardwareMonitor and the
+// Linux amd_energy driver show), Intel 0x606 / 0x611. Power is the counter
+// delta over the sampling interval; the counter is 32 bits wide and wraps
+// roughly every ten minutes at 100 W, which uint32 subtraction unwraps.
+
+const (
+	msrAMDPowerUnit   = 0xC0010299
+	msrAMDPkgEnergy   = 0xC001029B
+	msrIntelPowerUnit = 0x606
+	msrIntelPkgEnergy = 0x611
+)
+
+var (
+	raplOnce      sync.Once
+	raplJoules    float64 // joules per counter step; 0 when unavailable
+	raplEnergyMSR uint32
+	raplPrevRaw   uint32
+	raplPrevAt    time.Time
+	raplHave      bool
+)
+
+// msrRead reads one MSR through the firmware; false when the method fails.
+func msrRead(path string, index uint32) (uint64, bool) {
+	row, err := wmiExecMethod(nsWMI, path, "asio_hw_fun15", map[string]int64{"Index": int64(index)}, "DataHi", "DataLo")
+	if err != nil || !row["DataHi"].ok || !row["DataLo"].ok {
+		return 0, false
+	}
+	return uint64(uint32(row["DataHi"].Int()))<<32 | uint64(uint32(row["DataLo"].Int())), true
+}
+
+// asusCPUPower: CPU package power in W from the RAPL counters, or -1. The
+// first call only primes the counter.
+func asusCPUPower() int {
+	p := asusHW()
+	if p == "" {
+		return -1
+	}
+	raplOnce.Do(func() {
+		unitMSR, energyMSR := uint32(msrAMDPowerUnit), uint32(msrAMDPkgEnergy)
+		vendor := regString(`HARDWARE\DESCRIPTION\System\CentralProcessor\0`, "VendorIdentifier", "")
+		switch {
+		case strings.Contains(vendor, "Intel"):
+			unitMSR, energyMSR = msrIntelPowerUnit, msrIntelPkgEnergy
+		case strings.Contains(vendor, "AMD"):
+		default:
+			fmt.Fprintf(os.Stderr, "asus-wmi: CPU vendor %q has no known energy MSRs; CPU power needs LibreHardwareMonitor\n", vendor)
+			return
+		}
+		unit, ok := msrRead(p, unitMSR)
+		raplJoules = raplJoulesPerStep(unit)
+		if !ok || raplJoules == 0 {
+			fmt.Fprintln(os.Stderr, "asus-wmi: energy unit MSR unreadable; CPU power needs LibreHardwareMonitor")
+			raplJoules = 0
+			return
+		}
+		raplEnergyMSR = energyMSR
+		// Prime the counter so even the very first frame (-once) carries a value.
+		if raw, ok := msrRead(p, energyMSR); ok {
+			raplPrevRaw, raplPrevAt, raplHave = uint32(raw), time.Now(), true
+			time.Sleep(250 * time.Millisecond)
+		}
+	})
+	if raplJoules == 0 {
+		return -1
+	}
+	raw, ok := msrRead(p, raplEnergyMSR)
+	if !ok {
+		return -1
+	}
+	now := time.Now()
+	prevRaw, prevAt, had := raplPrevRaw, raplPrevAt, raplHave
+	raplPrevRaw, raplPrevAt, raplHave = uint32(raw), now, true
+	if !had {
+		return -1
+	}
+	return raplWatts(prevRaw, uint32(raw), raplJoules, now.Sub(prevAt).Seconds())
+}
+
+// raplJoulesPerStep decodes the power-unit MSR: ESU in bits 12:8 gives
+// 2^-ESU J per energy counter step. 0 for an implausible register.
+func raplJoulesPerStep(unit uint64) float64 {
+	esu := (unit >> 8) & 0x1F
+	if esu == 0 {
+		return 0
+	}
+	return 1 / float64(uint64(1)<<esu)
+}
+
+// raplWatts: average power between two 32-bit energy counter readings taken
+// dt seconds apart, unwrapping one rollover; -1 when the interval is too short
+// or the result is implausible.
+func raplWatts(prev, cur uint32, joules, dt float64) int {
+	if dt < 0.05 {
+		return -1
+	}
+	w := float64(cur-prev) * joules / dt
+	if w <= 0 || w > 2000 {
+		return -1
+	}
+	return int(w + 0.5)
 }
 
 // asusFanRPM: the CPU fan's RPM, else the first other spinning fan, else 0.

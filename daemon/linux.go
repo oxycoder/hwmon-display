@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -215,6 +216,9 @@ func gpuInfo() string {
 		if v := readTrim(d + "/gpu_busy_percent"); v != "" {
 			parts = append(parts, "GPU_LOAD="+v)
 		}
+		if w := amdGPUPower(d); w >= 0 {
+			parts = append(parts, "GPU_W="+strconv.Itoa(w))
+		}
 		used, total := readInt(d+"/mem_info_vram_used"), readInt(d+"/mem_info_vram_total")
 		if total > 0 {
 			parts = append(parts, "VRAM_USED_MB="+strconv.Itoa(used>>20), "VRAM_MB="+strconv.Itoa(total>>20))
@@ -229,6 +233,116 @@ func amdGPUName(dev string) string {
 		return n
 	}
 	return "AMD GPU " + strings.TrimPrefix(readTrim(dev+"/device"), "0x")
+}
+
+// amdGPUPower: board power in W from the amdgpu hwmon node (power1_average on
+// dGPUs, power1_input on APUs; both in µW), or -1.
+func amdGPUPower(dev string) int {
+	hw, _ := filepath.Glob(dev + "/hwmon/hwmon*")
+	if len(hw) == 0 {
+		return -1
+	}
+	for _, f := range []string{"/power1_average", "/power1_input"} {
+		if uw := readInt(hw[0] + f); uw > 0 {
+			return (uw + 500000) / 1000000
+		}
+	}
+	return -1
+}
+
+// ---------- CPU package power ------------------------------------------------
+//
+// RAPL through powercap: /sys/class/powercap/intel-rapl:N/energy_uj is a
+// running energy counter per package (the intel_rapl driver also covers AMD
+// Zen), so power is the energy delta over the sampling interval. Readable by
+// root only since kernel 5.10 (CVE-2020-8694); when the files are not readable
+// the zenpower hwmon driver's power inputs (µW, core + SoC) are the fallback.
+
+type energySample struct {
+	uj uint64
+	at time.Time
+}
+
+var raplPrev map[string]energySample
+
+// cpuPower returns the CPU package power in W, or -1 when unavailable. The
+// first call only primes the counters and returns -1.
+func cpuPower() int {
+	zones, _ := filepath.Glob("/sys/class/powercap/intel-rapl:[0-9]*")
+	now := time.Now()
+	if raplPrev == nil {
+		raplPrev = map[string]energySample{}
+	}
+	watts, ok := -1.0, false
+	for _, z := range zones {
+		if !strings.HasPrefix(readTrim(z+"/name"), "package") {
+			continue
+		}
+		b, err := os.ReadFile(z + "/energy_uj")
+		if err != nil {
+			continue
+		}
+		uj, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+		if err != nil {
+			continue
+		}
+		prev, had := raplPrev[z]
+		raplPrev[z] = energySample{uj, now}
+		if !had {
+			continue
+		}
+		if w, good := raplWatts(prev, energySample{uj, now}, uint64(readInt(z+"/max_energy_range_uj"))); good {
+			if !ok {
+				watts, ok = 0, true
+			}
+			watts += w
+		}
+	}
+	if ok {
+		return int(watts + 0.5)
+	}
+	return zenpowerWatts()
+}
+
+// raplWatts turns two energy_uj samples into watts, unwrapping one counter
+// rollover; false when the interval is too short or the delta is implausible.
+func raplWatts(prev, cur energySample, maxRange uint64) (float64, bool) {
+	dt := cur.at.Sub(prev.at).Seconds()
+	if dt < 0.05 {
+		return 0, false
+	}
+	var duj uint64
+	if cur.uj >= prev.uj {
+		duj = cur.uj - prev.uj
+	} else if maxRange > 0 {
+		duj = maxRange - prev.uj + cur.uj
+	} else {
+		return 0, false
+	}
+	w := float64(duj) / 1e6 / dt
+	if w < 0 || w > 2000 {
+		return 0, false
+	}
+	return w, true
+}
+
+// zenpowerWatts sums the zenpower driver's power inputs (µW), or -1.
+func zenpowerWatts() int {
+	dirs, _ := filepath.Glob("/sys/class/hwmon/hwmon*")
+	for _, d := range dirs {
+		if readTrim(d+"/name") != "zenpower" {
+			continue
+		}
+		inputs, _ := filepath.Glob(d + "/power*_input")
+		sum := 0
+		for _, in := range inputs {
+			sum += readInt(in)
+		}
+		if sum > 0 {
+			return (sum + 500000) / 1000000
+		}
+	}
+	return -1
 }
 
 // fanRPM returns the first non-zero fan reading (typically CPU fan), or 0.
