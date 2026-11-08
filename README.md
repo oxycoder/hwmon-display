@@ -180,7 +180,10 @@ settings; the app already asks the firmware to connect all controllers and retri
    so there is deliberately no `HKCU\...\CurrentVersion\Run` fallback any more. `-autostart off`
    removes the task and any Run entry left from an older version (the tray checkbox and the control
    panel's *autostart* field report only the task). When started from the task / Explorer the console window
-   closes itself; from a terminal the log stays visible. For the COM build find the port in
+   closes itself; from a terminal the log stays visible. The logon task starts hwmond in the same
+   second as `explorer.exe`, before the taskbar exists, so the tray icon is retried every second until
+   the shell accepts it (and re-added whenever Explorer restarts; the elevated instance opts its window
+   in to the `TaskbarCreated` broadcast, which UIPI would otherwise drop). For the COM build find the port in
    Device Manager → Ports (USB Serial Device).
 
    **Tray icon (both)**: `hwmond -tray` adds an icon whose tooltip shows the state (*display on COM3*,

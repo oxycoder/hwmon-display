@@ -33,6 +33,38 @@ func TestTrayIcon(t *testing.T) {
 	}
 }
 
+// TestTrayIconRetry starts the tray while NIM_ADD is blocked, as at logon
+// when the task launches hwmond before explorer.exe has a taskbar: startTray
+// must still succeed (window up, no icon), and the retry timer must add the
+// icon once the shell accepts it.
+func TestTrayIconRetry(t *testing.T) {
+	loginArgs = []string{"-tray"}
+	setStatus("unit test")
+	trayAddBlocked.Store(true)
+	defer trayAddBlocked.Store(false)
+	if err := startTray(); err != nil {
+		t.Fatal(err)
+	}
+	h := trayHwnd.Load()
+	if h == 0 {
+		t.Fatal("no tray window")
+	}
+	if notify(nimModify, h) {
+		t.Fatal("icon present although NIM_ADD was blocked")
+	}
+	trayAddBlocked.Store(false)
+	deadline := time.Now().Add(5 * time.Second)
+	for !notify(nimModify, h) {
+		if time.Now().After(deadline) {
+			t.Fatal("icon not added by the retry timer within 5s")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !notify(nimDelete, h) {
+		t.Fatal("NIM_DELETE failed")
+	}
+}
+
 // TestAutostartRegistry registers and removes the login entry. Unelevated (the
 // UAC relaunch is turned off) enabling must refuse and register nothing, not
 // fall back to the unelevated Run key; elevated it registers the

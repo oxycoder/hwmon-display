@@ -28,6 +28,9 @@ var (
 	procPostMessage       = user32.NewProc("PostMessageW")
 	procPostQuitMessage   = user32.NewProc("PostQuitMessage")
 	procRegisterWindowMsg = user32.NewProc("RegisterWindowMessageW")
+	procChangeMsgFilterEx = user32.NewProc("ChangeWindowMessageFilterEx")
+	procSetTimer          = user32.NewProc("SetTimer")
+	procKillTimer         = user32.NewProc("KillTimer")
 	procMessageBox        = user32.NewProc("MessageBoxW")
 	procCreatePopupMenu   = user32.NewProc("CreatePopupMenu")
 	procAppendMenu        = user32.NewProc("AppendMenuW")
@@ -52,6 +55,10 @@ const (
 	wmEndSession  = 0x0016 // wParam != 0: the session really is ending
 	wmPowerBcast  = 0x0218 // WM_POWERBROADCAST
 	pbtSuspend    = 0x0004 // PBT_APMSUSPEND: the PC is going to sleep now
+	wmTimer       = 0x0113
+	idTrayRetry   = 1    // WM_TIMER id: the taskbar was not there yet, try NIM_ADD again
+	trayRetryMs   = 1000 // retry period; a logon-time explorer.exe is up within a few seconds
+	msgfltAllow   = 1    // ChangeWindowMessageFilterEx: let lower-integrity senders through UIPI
 	wmLButtonUp   = 0x0202
 	wmRButtonUp   = 0x0205
 	wmApp         = 0x8000
@@ -128,8 +135,17 @@ var (
 	trayWndProcCB  = syscall.NewCallback(trayWndProc)
 )
 
-// startTray creates the icon on its own OS thread and returns once it is
-// visible (or creation failed). The message loop runs for the process lifetime.
+// startTray creates the tray window on its own OS thread and returns once the
+// icon is added or its retry is scheduled (an error only when the window itself
+// cannot be made). The message loop runs for the process lifetime.
+//
+// The logon task starts hwmond in the same second as explorer.exe, so the
+// first Shell_NotifyIcon(NIM_ADD) usually finds no taskbar and fails; giving up
+// there left the daemon running headless with no icon ever. Instead the window
+// stays and NIM_ADD is retried every second until it sticks, and again whenever
+// explorer broadcasts TaskbarCreated (restart or late start). The task runs
+// elevated (HighestAvailable), and UIPI drops that broadcast from the
+// medium-integrity explorer unless the window opts in, hence the message filter.
 func startTray() error {
 	hideOwnConsole()
 	done := make(chan error, 1)
@@ -139,7 +155,8 @@ func startTray() error {
 		cls, _ := syscall.UTF16PtrFromString("hwmondTray")
 		wc := wndClassEx{LpfnWndProc: trayWndProcCB, HInstance: hinst, LpszClassName: cls}
 		wc.CbSize = uint32(unsafe.Sizeof(wc))
-		if r, _, e := procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
+		const errClassAlreadyExists = syscall.Errno(1410) // a second startTray in the tests
+		if r, _, e := procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc))); r == 0 && e != errClassAlreadyExists {
 			done <- fmt.Errorf("RegisterClassEx: %v", e)
 			return
 		}
@@ -156,11 +173,13 @@ func startTray() error {
 			return
 		}
 		trayIcon = makeIcon(hinst)
-		if !notify(nimAdd, hwnd) {
-			done <- fmt.Errorf("Shell_NotifyIcon failed")
-			return
+		if taskbarCreated != 0 {
+			procChangeMsgFilterEx.Call(hwnd, taskbarCreated, msgfltAllow, 0)
 		}
 		trayHwnd.Store(hwnd)
+		if !addIcon(hwnd) {
+			procSetTimer.Call(hwnd, idTrayRetry, trayRetryMs, 0)
+		}
 		done <- nil
 		var m msg
 		for {
@@ -182,8 +201,22 @@ func trayStatusChanged() {
 	}
 }
 
+// addIcon puts the icon in the notification area. A failed NIM_ADD can mean
+// the shell was merely slow (ERROR_TIMEOUT) and did add it, so a NIM_MODIFY
+// that succeeds also counts as present.
+func addIcon(hwnd uintptr) bool {
+	return notify(nimAdd, hwnd) || notify(nimModify, hwnd)
+}
+
+// trayAddBlocked makes NIM_ADD fail, standing in for a taskbar that is not up
+// yet; the test uses it to exercise the retry timer.
+var trayAddBlocked atomic.Bool
+
 // notify adds/updates/removes the icon; the tooltip is the current status.
 func notify(action uintptr, hwnd uintptr) bool {
+	if action == nimAdd && trayAddBlocked.Load() {
+		return false
+	}
 	var nid notifyIconData
 	nid.CbSize = uint32(unsafe.Sizeof(nid))
 	nid.HWnd = hwnd
@@ -220,8 +253,15 @@ func trayWndProc(hwnd uintptr, m uint32, wParam, lParam uintptr) uintptr {
 	case m == wmDestroy:
 		procPostQuitMessage.Call(0)
 		return 0
+	case m == wmTimer && wParam == idTrayRetry:
+		if addIcon(hwnd) {
+			procKillTimer.Call(hwnd, idTrayRetry)
+		}
+		return 0
 	case taskbarCreated != 0 && uintptr(m) == taskbarCreated:
-		notify(nimAdd, hwnd)
+		if addIcon(hwnd) { // explorer (re)started: the old icon is gone, add it again
+			procKillTimer.Call(hwnd, idTrayRetry)
+		}
 		return 0
 	}
 	r, _, _ := procDefWindowProc.Call(hwnd, uintptr(m), wParam, lParam)
