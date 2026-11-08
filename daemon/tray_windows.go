@@ -1,7 +1,7 @@
 //go:build windows
 
-// Tray icon (Shell_NotifyIcon on a message-only window, no cgo) and login
-// autostart via HKCU\Software\Microsoft\Windows\CurrentVersion\Run.
+// Tray icon (Shell_NotifyIcon on a message-only window, no cgo) and the Run-key
+// half of login autostart (autostart_windows.go adds the elevated task route).
 
 package main
 
@@ -351,12 +351,13 @@ func hideOwnConsole() {
 	}
 }
 
-// ---------- login autostart: HKCU ...\CurrentVersion\Run ---------------------
+// ---------- login autostart, non-elevated fallback: HKCU ...\CurrentVersion\Run
+// (the elevated Task Scheduler route lives in autostart_windows.go)
 
 const runKey = `Software\Microsoft\Windows\CurrentVersion\Run`
 const runValue = "hwmond"
 
-func setAutostart(enable bool) error {
+func setRunKey(enable bool) error {
 	key, _ := syscall.UTF16PtrFromString(runKey)
 	name, _ := syscall.UTF16PtrFromString(runValue)
 	var h syscall.Handle
@@ -381,6 +382,12 @@ func setAutostart(enable bool) error {
 	for _, a := range loginArgs {
 		cmd += " " + quoteArg(a)
 	}
+	return writeRunValue(h, cmd)
+}
+
+// writeRunValue stores cmd as the hwmond Run value under the open key h.
+func writeRunValue(h syscall.Handle, cmd string) error {
+	name, _ := syscall.UTF16PtrFromString(runValue)
 	val, _ := syscall.UTF16FromString(cmd)
 	const regSZ = 1
 	if r, _, _ := procRegSetValueEx.Call(uintptr(h), uintptr(unsafe.Pointer(name)), 0, regSZ,
@@ -390,7 +397,7 @@ func setAutostart(enable bool) error {
 	return nil
 }
 
-func autostartEnabled() bool {
+func runKeyEnabled() bool {
 	key, _ := syscall.UTF16PtrFromString(runKey)
 	var h syscall.Handle
 	if syscall.RegOpenKeyEx(syscall.HKEY_CURRENT_USER, key, 0, syscall.KEY_READ, &h) != nil {

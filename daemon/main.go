@@ -10,9 +10,10 @@
 //	hwmond -port - -once               # print one line to stdout
 //	hwmond -tray                       # also show a tray icon (status, start-on-login toggle, quit)
 //	hwmond -autostart on               # start at login with the current flags (+ -tray); "off" removes it
+//	                                   # (Windows: elevated Task Scheduler logon task via a UAC prompt, so CPU temp/power work)
 //
 // Per-OS sensor + serial code lives in linux.go / windows.go; the tray icon and
-// the login-autostart entry in tray_linux.go / tray_windows.go.
+// the login-autostart entry in tray_linux.go / tray_windows.go + autostart_windows.go.
 package main
 
 import (

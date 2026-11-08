@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/xml"
 	"os"
 	"strings"
 	"syscall"
@@ -32,15 +33,36 @@ func TestTrayIcon(t *testing.T) {
 	}
 }
 
-// TestAutostartRegistry writes and removes the HKCU Run entry. It changes the
+// TestAutostartRegistry registers and removes the login entry: the HKCU Run
+// value when the test runs unelevated (the UAC relaunch is turned off), the
+// highest-privilege scheduled task when it runs elevated. It changes the
 // current user's startup list (restored afterwards), so it runs only with
 // HWMOND_AUTOSTART_TEST=1.
 func TestAutostartRegistry(t *testing.T) {
 	if os.Getenv("HWMOND_AUTOSTART_TEST") != "1" {
-		t.Skip("set HWMOND_AUTOSTART_TEST=1 to exercise the Run key")
+		t.Skip("set HWMOND_AUTOSTART_TEST=1 to exercise the Run key / scheduled task")
 	}
-	was := autostartEnabled()
-	defer setAutostart(was)
+	uacPrompt = false
+	defer func() { uacPrompt = true }()
+	// Put back exactly what the user had: the Run value text and the task XML
+	// (re-registering through setAutostart would point them at this test binary).
+	origRun := runValueString()
+	origTask, origTaskErr := runSchtasks("/Query", "/TN", taskName, "/XML")
+	defer func() {
+		if err := setAutostart(false); err != nil {
+			t.Error("cleanup:", err)
+		}
+		if origRun != "" {
+			if err := restoreRunValue(origRun); err != nil {
+				t.Error("cleanup:", err)
+			}
+		}
+		if origTaskErr == nil {
+			if err := importTask(origTask); err != nil {
+				t.Error("cleanup:", err)
+			}
+		}
+	}()
 	loginArgs = []string{"-tray", "-port", "COM3"}
 	if err := setAutostart(true); err != nil {
 		t.Fatal(err)
@@ -49,7 +71,15 @@ func TestAutostartRegistry(t *testing.T) {
 		t.Fatal("entry not found after enabling")
 	}
 	exe, _ := exePath()
-	if v := runValueString(); !strings.Contains(v, exe) || !strings.HasSuffix(v, "-tray -port COM3") {
+	if isAdmin() {
+		if !taskExists() || runKeyEnabled() {
+			t.Fatalf("elevated: task=%v runKey=%v, want the task only", taskExists(), runKeyEnabled())
+		}
+		out, err := runSchtasks("/Query", "/TN", taskName, "/XML")
+		if err != nil || !strings.Contains(out, "<RunLevel>HighestAvailable</RunLevel>") || !strings.Contains(out, "-tray -port COM3") {
+			t.Fatalf("task XML: %v\n%s", err, out)
+		}
+	} else if v := runValueString(); !strings.Contains(v, exe) || !strings.HasSuffix(v, "-tray -port COM3") {
 		t.Fatalf("Run value = %q", v)
 	}
 	if err := setAutostart(false); err != nil {
@@ -89,4 +119,61 @@ func TestEmbeddedIcon(t *testing.T) {
 			t.Errorf("LoadImage(icon 1, %dpx) failed: resource not linked?", sz)
 		}
 	}
+}
+
+// TestTaskXML checks the scheduled-task definition parses as XML, escapes the
+// path and user, and carries the settings the Run key could not express.
+func TestTaskXML(t *testing.T) {
+	x := taskXML(`C:\Tools & Co\hwmond.exe`, []string{"-tray", "-port", "COM 3"}, `PC\tung`)
+	var task struct {
+		Triggers struct {
+			Logon struct {
+				UserId string `xml:"UserId"`
+			} `xml:"LogonTrigger"`
+		}
+		Principals struct {
+			P struct {
+				RunLevel  string
+				LogonType string
+			} `xml:"Principal"`
+		}
+		Settings struct {
+			ExecutionTimeLimit      string
+			MultipleInstancesPolicy string
+		}
+		Actions struct {
+			Exec struct {
+				Command   string
+				Arguments string
+			}
+		}
+	}
+	// The declared UTF-16 is how schtasks gets the file; the Go decoder sees UTF-8.
+	plain := strings.Replace(x, ` encoding="UTF-16"`, "", 1)
+	if err := xml.Unmarshal([]byte(plain), &task); err != nil {
+		t.Fatalf("xml: %v\n%s", err, x)
+	}
+	if task.Actions.Exec.Command != `C:\Tools & Co\hwmond.exe` || task.Actions.Exec.Arguments != `-tray -port "COM 3"` {
+		t.Fatalf("exec = %q %q", task.Actions.Exec.Command, task.Actions.Exec.Arguments)
+	}
+	if task.Triggers.Logon.UserId != `PC\tung` || task.Principals.P.RunLevel != "HighestAvailable" || task.Principals.P.LogonType != "InteractiveToken" {
+		t.Fatalf("principal: %+v %+v", task.Triggers.Logon, task.Principals.P)
+	}
+	if task.Settings.ExecutionTimeLimit != "PT0S" || task.Settings.MultipleInstancesPolicy != "IgnoreNew" {
+		t.Fatalf("settings: %+v", task.Settings)
+	}
+	if b := utf16BOM("A"); len(b) != 4 || b[0] != 0xFF || b[1] != 0xFE || b[2] != 'A' || b[3] != 0 {
+		t.Fatalf("utf16BOM = %x", b)
+	}
+}
+
+// restoreRunValue writes cmd back as the hwmond Run value.
+func restoreRunValue(cmd string) error {
+	key, _ := syscall.UTF16PtrFromString(runKey)
+	var h syscall.Handle
+	if err := syscall.RegOpenKeyEx(syscall.HKEY_CURRENT_USER, key, 0, syscall.KEY_READ|0x0002, &h); err != nil {
+		return err
+	}
+	defer syscall.RegCloseKey(h)
+	return writeRunValue(h, cmd)
 }
