@@ -43,11 +43,22 @@ typedef struct {
     uint32_t rx_bytes;          /* raw bytes received (debug) */
     uint32_t last_rx_ms;        /* for the "no signal" state */
     uint8_t  standby_req;       /* host sent "SRC=CMD|STANDBY=1": stay dark until the next data frame */
+    uint8_t  info_req;          /* host sent "SRC=CMD|INFO=1": answer with a "SRC=DEV|..." line (platform clears) */
+    int16_t  bl_req;            /* host sent "SRC=CMD|BL=n": backlight 0..100 %, -1 = no request (platform clears) */
 } dc_state;
 
 void        dc_init(dc_state *s);
 /* Feed one byte from the UART. Returns 1 when a complete frame was parsed
-   (a data frame to render, or a CMD frame — check dc_standby()). */
+   (a data frame to render, or a CMD frame — check dc_standby(), info_req, bl_req).
+
+   Frames (all "SRC=...|KEY=VAL|...\n"):
+     SRC=UEFI / SRC=OS   hardware pages (boot stage / running OS)
+     SRC=TEXT            free text page: TITLE, L1..L12 (a line may start with
+                         "#<colour>:" — accent ok warn hot dim text), SIZE=1..4
+                         (default 2), COLOR=<colour>, ALIGN=left|center
+     SRC=CMD             control: STANDBY=1|0, INFO=1, BL=0..100 — never replaces
+                         the data on screen
+   The device answers INFO with "SRC=DEV|KEY=VAL|...\n" (platform-specific). */
 int         dc_feed(dc_state *s, uint8_t byte, uint32_t now_ms);
 const char *dc_get(const dc_state *s, const char *key);       /* "" if absent */
 /* Redraw the whole screen from the current state. */

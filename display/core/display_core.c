@@ -5,7 +5,17 @@
 
 /* ---------- parsing ------------------------------------------------------- */
 
-void dc_init(dc_state *s) { memset(s, 0, sizeof(*s)); }
+void dc_init(dc_state *s) { memset(s, 0, sizeof(*s)); s->bl_req = -1; }
+
+/* Value of `|KEY=` in a raw (unsplit) line, or NULL. The value runs up to the
+   next '|' or the end of the line — fine for the numeric CMD arguments. */
+static const char *cmd_val(const char *line, const char *key)
+{
+    size_t n = strlen(key);
+    for (const char *p = line; (p = strchr(p, '|')) != NULL; p++)
+        if (!strncmp(p + 1, key, n) && p[1 + n] == '=') return p + 2 + n;
+    return NULL;
+}
 
 static void parse_line(dc_state *s)
 {
@@ -40,7 +50,18 @@ int dc_feed(dc_state *s, uint8_t b, uint32_t now_ms)
             if (!memcmp(s->line, "SRC=CMD", 7) && (s->line[7] == '|' || s->line[7] == 0)) {
                 /* Control frame from the host: does not replace the data on
                    screen, so the last readings come back on wake. */
-                if (strstr(s->line, "|STANDBY=1")) { s->standby_req = 1; ok = 1; }
+                const char *v;
+                if ((v = cmd_val(s->line, "STANDBY")) != NULL) {
+                    s->standby_req = atoi(v) != 0;
+                    if (!s->standby_req) s->last_rx_ms = now_ms;   /* STANDBY=0: wake without new data */
+                    ok = 1;
+                }
+                if ((v = cmd_val(s->line, "INFO")) != NULL && atoi(v)) { s->info_req = 1; ok = 1; }
+                if ((v = cmd_val(s->line, "BL")) != NULL) {
+                    int n = atoi(v);
+                    s->bl_req = (int16_t)(n < 0 ? 0 : n > 100 ? 100 : n);
+                    ok = 1;
+                }
             } else {
                 parse_line(s);
                 s->frames++;
@@ -297,6 +318,82 @@ static void render_os(const dc_state *s, const dc_gfx *g)
     }
 }
 
+/* ---------- TEXT page: whatever the host wants to show ----------------------
+ * SRC=TEXT|TITLE=Build|L1=#ok:main passing|L2=#hot:release FAILED|L3=...|SIZE=2|COLOR=text|ALIGN=center
+ * Lines are word-wrapped to the screen width at the chosen font size and drawn
+ * until the screen is full. An empty / blank line value leaves a gap. */
+
+static dc_color color_named(const char *n, dc_color def)
+{
+    if (!strcmp(n, "accent")) return C_ACCENT;
+    if (!strcmp(n, "ok"))     return C_OK;
+    if (!strcmp(n, "warn"))   return C_WARN;
+    if (!strcmp(n, "hot"))    return C_HOT;
+    if (!strcmp(n, "dim"))    return C_DIM;
+    if (!strcmp(n, "text"))   return C_TEXT;
+    return def;
+}
+
+/* "#warn:disk almost full" -> colour C_WARN, text after the colon. Anything
+   that is not a known colour name stays literal. */
+static const char *line_color(const char *v, dc_color def, dc_color *out)
+{
+    *out = def;
+    if (v[0] != '#') return v;
+    const char *colon = strchr(v, ':');
+    if (!colon || colon - v > 8) return v;
+    char name[8];
+    snprintf(name, sizeof name, "%.*s", (int)(colon - v - 1), v + 1);
+    dc_color c = color_named(name, 0xFFFF);
+    if (c == 0xFFFF) return v;
+    *out = c;
+    return colon + 1;
+}
+
+static void render_text(const dc_state *s, const dc_gfx *g)
+{
+    char buf[80];
+    int size = ival(s, "SIZE", 2);
+    if (size < 1) size = 1;
+    if (size > 4) size = 4;
+    int center = dc_get(s, "ALIGN")[0] == 'c';
+    dc_color def = color_named(dc_get(s, "COLOR"), C_TEXT);
+
+    int y = 6;
+    const char *title = dc_get(s, "TITLE");
+    if (*title) {
+        fit(buf, sizeof buf, title, (DC_W - 16) / 12);
+        text(g, center ? (DC_W - (int)strlen(buf) * 12) / 2 : 8, y, buf, C_ACCENT, 2);
+        y += 22;
+        g->fill_rect(0, y, DC_W, 1, C_PANEL);
+        y += 6;
+    }
+
+    int cw = 6 * size, ch = 8 * size, lh = ch + (size > 1 ? 4 : 3);
+    int maxc = (DC_W - 16) / cw;
+    for (int i = 1; i <= 12 && y + ch <= DC_H; i++) {
+        char key[8];
+        snprintf(key, sizeof key, "L%d", i);
+        dc_color col;
+        const char *p = line_color(dc_get(s, key), def, &col);
+        while (*p == ' ') p++;
+        if (!*p) { y += lh; continue; }                    /* blank line: just a gap */
+        while (*p && y + ch <= DC_H) {
+            int n = (int)strlen(p);
+            if (n > maxc) {                                 /* wrap at the last space that fits */
+                int k = maxc;
+                while (k > 0 && p[k] != ' ') k--;
+                n = k > 0 ? k : maxc;
+            }
+            snprintf(buf, sizeof buf, "%.*s", n, p);
+            text(g, center ? (DC_W - n * cw) / 2 : 8, y, buf, col, size);
+            y += lh;
+            p += n;
+            while (*p == ' ') p++;
+        }
+    }
+}
+
 void dc_render(const dc_state *s, const dc_gfx *g, uint32_t now_ms)
 {
     g->fill_rect(0, 0, DC_W, DC_H, C_BG);
@@ -317,5 +414,6 @@ void dc_render(const dc_state *s, const dc_gfx *g, uint32_t now_ms)
     }
     const char *src = dc_get(s, "SRC");
     if (!strcmp(src, "OS")) render_os(s, g);
+    else if (!strcmp(src, "TEXT")) render_text(s, g);
     else render_boot(s, g);
 }

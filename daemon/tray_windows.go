@@ -75,6 +75,7 @@ const (
 	idStatus    = 1
 	idAutostart = 2
 	idQuit      = 3
+	idPanel     = 4
 )
 
 type notifyIconData struct {
@@ -197,6 +198,9 @@ func notify(action uintptr, hwnd uintptr) bool {
 
 func trayWndProc(hwnd uintptr, m uint32, wParam, lParam uintptr) uintptr {
 	switch {
+	case m == wmTrayEvent && lParam == wmLButtonUp && panelURL() != "":
+		openPanel() // left click: straight to the control panel
+		return 0
 	case m == wmTrayEvent && (lParam == wmRButtonUp || lParam == wmLButtonUp):
 		showMenu(hwnd)
 		return 0
@@ -231,6 +235,9 @@ func showMenu(hwnd uintptr) {
 	}
 	add(mfString|mfGrayed, idStatus, "hwmond: "+getStatus())
 	add(mfSeparator, 0, "")
+	if panelURL() != "" {
+		add(mfString, idPanel, "Open control panel")
+	}
 	auto := uintptr(mfString)
 	if autostartEnabled() {
 		auto |= mfChecked
@@ -245,6 +252,8 @@ func showMenu(hwnd uintptr) {
 	procPostMessage.Call(hwnd, 0, 0, 0) // WM_NULL: menu-dismiss quirk (KB 135788)
 	procDestroyMenu.Call(menu)
 	switch id {
+	case idPanel:
+		openPanel()
 	case idAutostart:
 		toggleAutostart()
 	case idQuit:

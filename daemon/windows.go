@@ -208,8 +208,13 @@ func openSerial(name string) (*os.File, error) {
 		syscall.CloseHandle(h)
 		return nil, fmt.Errorf("SetCommState: %v", e)
 	}
-	// write timeout 1 s so a dead device doesn't block forever
-	var to = struct{ RI, RTM, RTC, WTM, WTC uint32 }{0xFFFFFFFF, 0, 0, 10, 1000}
+	// Reads (device replies, see panel.go readLoop) return as soon as any byte
+	// is buffered, else after 100 ms (RI = RTM = MAXDWORD, RTC = 100: the
+	// documented "wait for the first byte with a timeout" combination). Kept
+	// short because a synchronous read on a non-overlapped handle holds up a
+	// concurrent write from the main loop until it returns.
+	// Write timeout 1 s so a dead device doesn't block forever.
+	var to = struct{ RI, RTM, RTC, WTM, WTC uint32 }{0xFFFFFFFF, 0xFFFFFFFF, 100, 10, 1000}
 	procSetCommTimeouts.Call(uintptr(h), uintptr(unsafe.Pointer(&to)))
 	procEscapeCommFunc.Call(uintptr(h), 5) // SETDTR
 	return os.NewFile(uintptr(h), name), nil

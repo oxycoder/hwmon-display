@@ -8,12 +8,14 @@
 //	hwmond -port /dev/ttyS0            # Linux, COM1
 //	hwmond -port COM5                  # Windows (WMI/driver libraries; run elevated on ASUS boards for CPU temp + fan)
 //	hwmond -port - -once               # print one line to stdout
-//	hwmond -tray                       # also show a tray icon (status, start-on-login toggle, quit)
+//	hwmond -tray                       # also show a tray icon (status, control panel, start-on-login toggle, quit)
+//	hwmond -web 127.0.0.1:8086         # control panel address (default); -web "" turns it off
 //	hwmond -autostart on               # start at login with the current flags (+ -tray); "off" removes it
 //	                                   # (Windows: elevated Task Scheduler logon task via a UAC prompt, so CPU temp/power work)
 //
 // Per-OS sensor + serial code lives in linux.go / windows.go; the tray icon and
-// the login-autostart entry in tray_linux.go / tray_windows.go + autostart_windows.go.
+// the login-autostart entry in tray_linux.go / tray_windows.go + autostart_windows.go;
+// the control panel (device info, custom screen content, raw commands) in panel.go.
 package main
 
 import (
@@ -35,16 +37,22 @@ func main() {
 	interval := flag.Duration("interval", time.Second, "send interval")
 	once := flag.Bool("once", false, "send one frame and exit")
 	tray := flag.Bool("tray", true, "show a system tray icon (status, start-on-login toggle, quit)")
-	autostart := flag.String("autostart", "", "on|off: register/unregister hwmond to start at login (with the current -port/-interval and -tray), then exit")
+	web := flag.String("web", defaultWeb, "control panel address (web UI + JSON API: device info, custom screen content); \"\" disables it")
+	autostart := flag.String("autostart", "", "on|off: register/unregister hwmond to start at login (with the current -port/-interval/-web and -tray), then exit")
 	flag.Parse()
 
-	loginArgs = autostartArgs(*port, *interval)
+	loginArgs = autostartArgs(*port, *interval, *web)
 	if *autostart != "" {
 		if err := configureAutostart(*autostart); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
+	}
+	if !*once {
+		if err := startPanel(*web); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	}
 	if *tray {
 		if err := startTray(); err != nil {
@@ -57,11 +65,13 @@ func main() {
 	}
 	cpu := newCPULoad()
 	static := staticInfo()
+	monitor := func() string { return static + "|" + dynamicInfo(cpu) }
 	for {
 		w := connect(*port, *once)
 		curPort.Store(w)
+		onConnect(w)
 		for {
-			line := static + "|" + dynamicInfo(cpu) + "\n"
+			line := scr.line(monitor) + "\n"
 			if _, err := w.WriteString(line); err != nil {
 				fmt.Fprintln(os.Stderr, "write:", err)
 				if *once || w == os.Stdout {
@@ -72,6 +82,7 @@ func main() {
 				setStatus("display disconnected, searching...")
 				break
 			}
+			noteSent(line)
 			if *once {
 				return
 			}
@@ -181,7 +192,7 @@ func getStatus() string {
 // loginArgs are the flags the login-autostart entry launches hwmond with.
 var loginArgs []string
 
-func autostartArgs(port string, interval time.Duration) []string {
+func autostartArgs(port string, interval time.Duration, web string) []string {
 	args := []string{"-tray"}
 	if port != "auto" {
 		args = append(args, "-port", port)
@@ -189,8 +200,14 @@ func autostartArgs(port string, interval time.Duration) []string {
 	if interval != time.Second {
 		args = append(args, "-interval", interval.String())
 	}
+	if web != defaultWeb {
+		args = append(args, "-web", web)
+	}
 	return args
 }
+
+// defaultWeb is where the control panel listens (loopback only; see panel.go).
+const defaultWeb = "127.0.0.1:8086"
 
 // exePath is the absolute path of this binary (symlinks resolved), for the autostart entry.
 func exePath() (string, error) {

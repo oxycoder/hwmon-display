@@ -445,7 +445,7 @@ func openSerial(path string) (*os.File, error) {
 	t.Lflag = 0                                                   // no ICANON/ECHO
 	t.Cflag = baud | syscall.CS8 | syscall.CREAD | syscall.CLOCAL // 8N1, no flow control
 	t.Ispeed, t.Ospeed = baud, baud
-	t.Cc[syscall.VMIN], t.Cc[syscall.VTIME] = 0, 0
+	t.Cc[syscall.VMIN], t.Cc[syscall.VTIME] = 0, 1 // reads return on the first byte or after 100 ms (device replies, panel.go)
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCSETS, uintptr(unsafe.Pointer(&t))); e != 0 {
 		f.Close()
 		return nil, fmt.Errorf("tcsets: %v", e)

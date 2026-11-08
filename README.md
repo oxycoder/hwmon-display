@@ -29,7 +29,7 @@ binary covers both builds.
 |---|---|---|
 | `uefi/hwmon.c` | UEFI app (GNU-EFI, C). Reads CPUID, SMBIOS, memory map, PCI; writes to the 16550 directly and to USB-serial via `EFI_USB_IO_PROTOCOL`; chainloads the real bootloader. | **tested in QEMU/OVMF, serial + USB** |
 | `uefi/usbio.h` | `EFI_USB_IO_PROTOCOL` definition (gnu-efi doesn't ship one). | |
-| `daemon/` | OS daemon. `linux.go`: hwmon/procfs, every mounted block device from `/proc/mounts` (USB, NTFS Windows partitions). `windows.go`: kernel32 for load/RAM/drives (fixed + removable), COM port via SetCommState. `wmi_windows.go`: dependency-free WMI client over raw COM; `sensors_windows.go`: GPU name/load/VRAM, ACPI thermal zone and disk temperatures (storage IOCTL, else WMI S.M.A.R.T.); `gpuvendor_windows.go`: GPU temperature via the AMD ADL / NVIDIA NVML driver libraries; `asuswmi_windows.go`: CPU temperature + fan RPM on ASUS boards via the firmware.s ASUSHW ACPI-WMI Super I/O reads (elevated); with LibreHardwareMonitor (`lhm_windows.go`) as an optional fallback for what WMI lacks. `icon/gen.go`: draws the app icon and emits `hwmond.ico` plus the `rsrc_windows_*.syso` resource objects (hand-built COFF, no tools) that give `hwmond.exe` its icon. `tray_*.go`: tray icon + start-at-login (Windows: Shell_NotifyIcon; `autostart_windows.go`: highest-privilege Task Scheduler logon task via schtasks with UAC self-elevation, HKCU Run key as the non-elevated fallback, no deps; Linux: StatusNotifierItem over D-Bus via godbus + XDG autostart). | Linux **tested over a pty**; Windows tray/autostart/parser unit-tested on a real desktop |
+| `daemon/` | OS daemon. `linux.go`: hwmon/procfs, every mounted block device from `/proc/mounts` (USB, NTFS Windows partitions). `windows.go`: kernel32 for load/RAM/drives (fixed + removable), COM port via SetCommState. `wmi_windows.go`: dependency-free WMI client over raw COM; `sensors_windows.go`: GPU name/load/VRAM, ACPI thermal zone and disk temperatures (storage IOCTL, else WMI S.M.A.R.T.); `gpuvendor_windows.go`: GPU temperature via the AMD ADL / NVIDIA NVML driver libraries; `asuswmi_windows.go`: CPU temperature + fan RPM on ASUS boards via the firmware.s ASUSHW ACPI-WMI Super I/O reads (elevated); with LibreHardwareMonitor (`lhm_windows.go`) as an optional fallback for what WMI lacks. `icon/gen.go`: draws the app icon and emits `hwmond.ico` plus the `rsrc_windows_*.syso` resource objects (hand-built COFF, no tools) that give `hwmond.exe` its icon. `tray_*.go`: tray icon + start-at-login (Windows: Shell_NotifyIcon; `autostart_windows.go`: highest-privilege Task Scheduler logon task via schtasks with UAC self-elevation, HKCU Run key as the non-elevated fallback, no deps; Linux: StatusNotifierItem over D-Bus via godbus + XDG autostart). `panel.go` + `panel.html`: the control panel, a loopback-only web UI / JSON API (device information from the ESP32, screen mode: hardware monitor / custom text page / any raw frame, one-shot commands, backlight), net/http only. | Linux **tested over a pty**; Windows tray/autostart/parser unit-tested on a real desktop |
 | `display/core/` | Platform-independent parser + renderer (320×240). Shared by the simulator and the ESP32. | **tested** |
 | `display/sim/` | Host simulator: reads a serial device/file, renders frames to PNG. | **tested** |
 | `display/esp32_es3c28p/` | **The board in use.** Sketch + `build.sh` for the ESP32-S3 2.8" ES3C28P (ILI9341V, native USB). | syntax-checked; flash with `build.sh` |
@@ -63,6 +63,36 @@ when it quits (tray *Quit*, Ctrl-C, SIGTERM), when the OS shuts down or logs off
 (Windows: `WM_POWERBROADCAST` / `PBT_APMSUSPEND`; Linux: logind `PrepareForSleep` on the system
 bus), so the screen goes dark at once instead of a minute later. On resume the next frame wakes it. `SRC=CMD` frames never replace the data on screen; the last readings
 come back on wake.
+
+**Control frames and replies.** `SRC=CMD` carries `STANDBY=1|0` (sleep / wake), `INFO=1` (send device
+information) and `BL=0..100` (backlight brightness, PWM; the firmware forgets it on reset, `hwmond`
+re-sends the last value when the display reconnects). The display is the only thing that ever talks
+back, and only when asked: to `INFO=1` it answers one line on the same port,
+
+```
+SRC=DEV|FW=1.2|BOARD=ES3C28P|CHIP=ESP32-S3|REV=2|CORES=2|CPU_MHZ=240|FLASH_MB=16|PSRAM_KB=0|PSRAM_FREE_KB=0|HEAP_TOTAL_KB=320|HEAP_KB=140|HEAP_MIN_KB=120|SKETCH_KB=358|APP_FREE_KB=921|SDK=v5.5.1|CORE=3.3.12|UP_S=812|RX_BYTES=240113|FRAMES=801|SPRITE=1|BL=100|STANDBY=0|RESET=1|TEMP=41|MAC=F412FA123456
+```
+
+and sends the same line once whenever the USB host (re)connects. `hwmon.efi` never reads the port, so
+the reply is harmless at boot. `hwmond` asks every 10 s while a display is connected and keeps the
+last two hours (`GET /api/history`) for the control panel's charts: chip temperature and free heap
+over time, link rate derived from `RX_BYTES`/`FRAMES`, and meters for the app partition
+(`SKETCH_KB` / `SKETCH_KB + APP_FREE_KB`), heap (`HEAP_TOTAL_KB - HEAP_KB`) and PSRAM.
+Open the panel with `?demo=1` to see the charts with made-up data before the board is flashed.
+
+**Text page.** `SRC=TEXT` shows whatever the host wants instead of the hardware page:
+
+```
+SRC=TEXT|TITLE=Build status|L1=#ok:main - passing|L2=#hot:release - FAILED|L3=|L4=next deploy 18:00|SIZE=2|COLOR=text|ALIGN=center
+```
+
+`TITLE` (optional, accent colour) and `L1`..`L12` are the lines; a line may start with `#accent:`,
+`#ok:`, `#warn:`, `#hot:`, `#dim:` or `#text:` to colour just that line, an empty line leaves a gap,
+long lines wrap at the last space that fits. `SIZE` is the 6×8 font multiplier (1 = 52 chars per
+line, 2 = 26, default; 3 = 17; 4 = 13), `COLOR` the default colour, `ALIGN` `left` (default) or
+`center`. Like every data frame it has to keep coming (the sender repeats it every tick) or the
+NO SIGNAL banner / standby kick in. Values are ASCII without `|` or `=`, at most 63 bytes each, the
+whole line at most 511 bytes.
 
 `CPU_W` / `GPU_W` are the CPU package and GPU board power in watts. The OS page shows them
 as a third column next to temperature and load, and the footer shows their sum (`PWR 298W`)
@@ -152,8 +182,23 @@ settings; the app already asks the firmware to connect all controllers and retri
    Device Manager → Ports (USB Serial Device).
 
    **Tray icon (both)**: `hwmond -tray` adds an icon whose tooltip shows the state (*display on COM3*,
-   *waiting for a USB display...*, *display disconnected, searching...*); its menu has a
-   *Start on login* checkbox (same as `-autostart`) and *Quit* (which also parks the display in standby).
+   *waiting for a USB display...*, *display disconnected, searching...*); its menu has
+   *Open control panel*, a *Start on login* checkbox (same as `-autostart`) and *Quit* (which also parks
+   the display in standby). A left click on the icon opens the control panel directly.
+
+   **Control panel (both)**: `hwmond` serves a small web UI at <http://127.0.0.1:8086/> (`-web host:port`
+   to move it, `-web ""` to turn it off; loopback addresses only). It shows the daemon state and the
+   last frame sent, the display's own information (firmware, chip, flash/PSRAM, free heap, uptime,
+   frames received, chip temperature, last reset reason — from the `SRC=DEV` reply, *Refresh* asks
+   again) with a backlight slider, and lets you choose what the screen shows: the hardware monitor,
+   a **custom text page** (title, up to 12 lines with per-line colours, size, alignment, with a
+   preview; kept on screen, re-sent every second, until you switch back) or **any raw protocol line**,
+   either held on screen the same way or sent once (for example `SRC=CMD|STANDBY=1`). The JSON API
+   behind it: `GET /api/state`, `POST /api/screen {"mode":"monitor"|"text"|"raw", "text":{...}, "raw":"..."}`,
+   `POST /api/send {"line":"SRC=..."}`, `POST /api/device/refresh`, `POST /api/device/backlight {"percent":n}`;
+   POSTs need `Content-Type: application/json` and no foreign `Origin`, so a web page you happen to
+   have open cannot drive the display. Device information and the text page need display firmware
+   1.2 or newer (this tree); older firmware shows the boot page for `SRC=TEXT` and never answers `INFO`.
 5. **ESP32**: Arduino IDE → ESP32 Dev Module, TFT_eSPI with `User_Setup_CYD.h`, flash `esp32_cyd.ino`.
 
 ## Notes / gotchas learned

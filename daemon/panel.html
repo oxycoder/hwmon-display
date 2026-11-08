@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hwmond control panel</title>
+<style>
+  :root {
+    --bg: #101218; --panel: #1c202a; --panel2: #232836; --line: #2c3240;
+    --text: #e6e8ec; --dim: #8a909c; --accent: #4cc2ff; --ok: #4cd97a; --warn: #ffb83c; --hot: #ff5a5a;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+    /* data-viz roles (validated dark-surface palette: series slot 1, de-emphasis gray, status) */
+    --viz-s1: #3987e5; --viz-s1-wash: rgba(57, 135, 229, .12); --viz-track: #104281;
+    --viz-gray: #898781; --viz-grid: #2c3240; --viz-axis: #383f4e;
+    --viz-good: #0ca30c; --viz-warning: #fab219; --viz-critical: #d03b3b;
+    --ink: #e6e8ec; --ink-2: #c3c2b7; --ink-muted: #898781;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header h1 span { color: var(--accent); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--panel2); color: var(--dim); font-size: 12px; }
+  .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .pill.on { color: var(--ok); } .pill.on::before { background: var(--ok); }
+  .pill.wait { color: var(--warn); } .pill.wait::before { background: var(--warn); }
+  .pill.off { color: var(--hot); } .pill.off::before { background: var(--hot); }
+  .spacer { flex: 1; }
+  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; }
+  section h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); display: flex; align-items: center; gap: 10px; }
+  section h2 .spacer { flex: 1; }
+  section h3 { margin: 18px 0 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+  .wide { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { padding: 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+  td:first-child { color: var(--dim); width: 42%; padding-right: 10px; }
+  td.v { font-family: var(--mono); word-break: break-all; }
+  tr:last-child td { border-bottom: 0; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #06121a; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; font-size: 12px; padding: 3px 8px; color: var(--dim); }
+  input[type=text], textarea, select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; font: inherit; }
+  textarea { font-family: var(--mono); font-size: 13px; resize: vertical; min-height: 110px; }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+  label { display: block; color: var(--dim); font-size: 12px; margin: 10px 0 4px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  .row > * { flex: 1; min-width: 100px; }
+  .row > .auto { flex: 0 0 auto; }
+  .tabs { display: flex; gap: 4px; background: var(--bg); border-radius: 8px; padding: 4px; margin-bottom: 12px; }
+  .tabs button { flex: 1; border: 0; background: transparent; color: var(--dim); padding: 7px 8px; border-radius: 6px; }
+  .tabs button.active { background: var(--panel2); color: var(--text); }
+  .tabs button.live::after { content: " ●"; color: var(--ok); }
+  .tab { display: none; } .tab.active { display: block; }
+  .mono { font-family: var(--mono); font-size: 12px; color: var(--dim); word-break: break-all; background: var(--bg); border-radius: 6px; padding: 8px 10px; }
+  .hint { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
+  .hint code { font-family: var(--mono); color: var(--text); background: var(--bg); padding: 0 4px; border-radius: 3px; }
+  .msg { min-height: 18px; font-size: 12px; margin-top: 8px; color: var(--dim); }
+  .msg.err { color: var(--hot); } .msg.ok { color: var(--ok); }
+  canvas { width: 100%; max-width: 640px; aspect-ratio: 4 / 3; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; display: block; image-rendering: pixelated; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { background: var(--bg); border-radius: 5px; padding: 2px 7px; font-family: var(--mono); font-size: 12px; }
+  .chip b { color: var(--accent); font-weight: 500; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .muted { color: var(--dim); }
+  a { color: var(--accent); }
+
+  /* ---- device dashboard ---- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .tile { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: end; }
+  .tile .lbl { grid-column: 1 / -1; color: var(--dim); font-size: 12px; }
+  .tile .val { font-size: 26px; font-weight: 600; line-height: 1.1; color: var(--ink); }
+  .tile .val small { font-size: 13px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+  .tile .sub { grid-column: 1 / -1; font-size: 12px; color: var(--dim); min-height: 16px; }
+  .tile .sub .up { color: var(--viz-good); } .tile .sub .down { color: var(--viz-critical); }
+  .tile svg { display: block; width: 72px; height: 28px; overflow: visible; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .chart { position: relative; }
+  .chart .title { display: flex; align-items: baseline; gap: 10px; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+  .chart .title b { font-weight: 600; color: var(--ink); }
+  .legend { display: flex; gap: 12px; font-size: 11px; color: var(--ink-2); margin-left: auto; }
+  .legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; border-radius: 1px; }
+  .chart svg { display: block; width: 100%; height: 190px; overflow: visible; font-family: system-ui, "Segoe UI", sans-serif; }
+  .chart .axis text { fill: var(--ink-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .chart .grid line { stroke: var(--viz-grid); stroke-width: 1; shape-rendering: crispEdges; }
+  .chart .baseline { stroke: var(--viz-axis); stroke-width: 1; shape-rendering: crispEdges; }
+  .chart .ser { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .endlbl { fill: var(--ink); font-size: 12px; font-weight: 600; }
+  .chart .empty { fill: var(--ink-muted); font-size: 12px; }
+  .chart .hover { position: absolute; inset: 0; cursor: crosshair; }
+  .tip { position: absolute; pointer-events: none; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; color: var(--ink); white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.4); display: none; z-index: 3; }
+  .tip .t { color: var(--dim); margin-bottom: 2px; }
+  .tip i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  .meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 18px; }
+  .meter .top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 5px; }
+  .meter .top b { color: var(--ink); font-weight: 600; }
+  .meter .top span { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .meter .track { height: 8px; border-radius: 4px; background: var(--viz-track); overflow: hidden; }
+  .meter .fill { height: 100%; border-radius: 4px; background: var(--viz-s1); transition: width .4s; }
+  .meter .state { font-size: 11px; color: var(--ink-2); margin-top: 4px; min-height: 14px; }
+  .meter.warning .fill { background: var(--viz-warning); } .meter.warning .track { background: #4a3608; }
+  .meter.critical .fill { background: var(--viz-critical); } .meter.critical .track { background: #4a1414; }
+  .samples { max-height: 260px; overflow: auto; margin-top: 8px; }
+  .samples table { font-size: 12px; font-variant-numeric: tabular-nums; }
+  .samples th { color: var(--dim); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  .samples td, .samples th { padding: 3px 8px 3px 0; }
+  .samples td:first-child { width: auto; color: var(--text); }
+  .devgrid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; margin-top: 18px; }
+  @media (max-width: 720px) { .devgrid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>hwmond</span> control panel</h1>
+  <span id="conn" class="pill wait">starting…</span>
+  <span id="shows" class="pill">display shows: –</span>
+  <span class="spacer"></span>
+  <span class="muted" id="ver"></span>
+</header>
+
+<main>
+  <section id="device" class="wide">
+    <h2>Display device <span id="devName" class="muted" style="text-transform:none;letter-spacing:0;font-weight:500"></span><span class="spacer"></span><span id="devAge" class="muted" style="text-transform:none;letter-spacing:0;font-size:12px"></span><button id="btnRefresh">Refresh</button></h2>
+    <div id="devEmpty" class="hint" style="margin-bottom:12px">No device information yet. The firmware answers <code>SRC=CMD|INFO=1</code> and announces itself on USB connect (firmware 1.2 or newer); hwmond then asks every 10 s and charts the answers. Add <code>?demo=1</code> to the URL to see the charts with made-up data.</div>
+
+    <div class="tiles">
+      <div class="tile"><span class="lbl">Chip temperature</span><span class="val" id="kTemp">–</span><svg id="sTemp"></svg><span class="sub" id="kTempSub"></span></div>
+      <div class="tile"><span class="lbl">Free heap</span><span class="val" id="kHeap">–</span><svg id="sHeap"></svg><span class="sub" id="kHeapSub"></span></div>
+      <div class="tile"><span class="lbl">Link from PC</span><span class="val" id="kLink">–</span><svg id="sLink"></svg><span class="sub" id="kLinkSub"></span></div>
+      <div class="tile"><span class="lbl">Uptime</span><span class="val" id="kUp">–</span><svg id="sUp" style="display:none"></svg><span class="sub" id="kUpSub"></span></div>
+    </div>
+
+    <h3>Last two hours <span class="muted" style="font-weight:400">· one sample every 10 s · hover for values</span><button class="ghost" id="btnTable" style="margin-left:10px">Show as table</button></h3>
+    <div class="charts">
+      <div class="chart" id="cTemp"><div class="title"><b>Chip temperature</b><span class="muted">°C</span></div></div>
+      <div class="chart" id="cHeap"><div class="title"><b>Free heap</b><span class="muted">KB</span><span class="legend"><span><i style="background:var(--viz-s1)"></i>free now</span><span><i style="background:var(--viz-gray)"></i>lowest since boot</span></span></div></div>
+    </div>
+    <div class="samples" id="samples" style="display:none"></div>
+
+    <h3>Storage</h3>
+    <div class="meters" id="meters"></div>
+
+    <div class="devgrid">
+      <div>
+        <h3 style="margin-top:0">Details</h3>
+        <table id="devTable"><tr><td colspan="2" class="muted">–</td></tr></table>
+      </div>
+      <div>
+        <h3 style="margin-top:0">Backlight brightness <span id="blVal" class="muted" style="font-weight:400"></span></h3>
+        <input type="range" id="bl" min="0" max="100" value="100" step="5">
+        <p class="hint">PWM on the backlight pin. Reset to 100 % when the board loses power; hwmond re-sends the chosen value when the display reconnects.</p>
+        <div class="msg" id="msgDevice"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screen" class="wide">
+    <h2>Screen content <span class="spacer"></span><span id="screenNote" class="muted" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div class="tabs">
+      <button data-tab="monitor">Hardware monitor</button>
+      <button data-tab="text">Custom text</button>
+      <button data-tab="raw">Raw frame</button>
+    </div>
+
+    <div class="tab" id="tab-monitor">
+      <p class="hint">The normal page: CPU / GPU temperature, load and power, RAM, disks, fan. hwmond reads the sensors every second and sends one <code>SRC=OS</code> frame.</p>
+      <div class="row" style="margin-top:10px">
+        <button class="primary auto" id="btnMonitor">Show hardware monitor</button>
+      </div>
+      <label>Last frame sent</label>
+      <div id="chips" class="chips"></div>
+      <div class="msg" id="msgMonitor"></div>
+    </div>
+
+    <div class="tab" id="tab-text">
+      <div class="row">
+        <div style="flex:2">
+          <label>Title (optional, accent colour, up to 25 characters)</label>
+          <input type="text" id="tTitle" maxlength="63" placeholder="Build status">
+          <label>Lines (one per line, up to 12; long lines wrap)</label>
+          <textarea id="tLines" placeholder="#ok:main — passing&#10;#hot:release — FAILED&#10;&#10;next deploy 18:00"></textarea>
+          <p class="hint">Start a line with <code>#ok:</code> <code>#warn:</code> <code>#hot:</code> <code>#accent:</code> <code>#dim:</code> to colour just that line. An empty line leaves a gap. ASCII only: the display's 6×8 font has nothing else.</p>
+          <div class="row">
+            <div><label>Text size</label>
+              <select id="tSize"><option value="1">1 · 52 chars/line</option><option value="2" selected>2 · 26 chars/line</option><option value="3">3 · 17 chars/line</option><option value="4">4 · 13 chars/line</option></select></div>
+            <div><label>Colour</label>
+              <select id="tColor"><option value="">text (default)</option><option value="accent">accent</option><option value="ok">ok (green)</option><option value="warn">warn (amber)</option><option value="hot">hot (red)</option><option value="dim">dim</option></select></div>
+            <div><label>Alignment</label>
+              <select id="tAlign"><option value="left">left</option><option value="center">center</option></select></div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary auto" id="btnText">Show on display</button>
+            <span class="muted auto" style="font-size:12px">kept on screen (re-sent every second) until you switch back</span>
+          </div>
+          <div class="msg" id="msgText"></div>
+        </div>
+        <div style="flex:1.4;min-width:280px">
+          <label>Preview (approximate)</label>
+          <canvas id="preview" width="640" height="480"></canvas>
+          <label>Frame</label>
+          <div class="mono" id="tFrame"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab" id="tab-raw">
+      <label>Protocol line (anything the display understands, see README › Protocol)</label>
+      <textarea id="rawLine" style="min-height:70px" placeholder="SRC=TEXT|TITLE=hi|L1=hello|SIZE=3"></textarea>
+      <div class="row">
+        <div><label>Examples</label>
+          <select id="rawExamples">
+            <option value="">insert…</option>
+            <option value="SRC=OS|HOST=demo|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|OS=Demo OS|LOAD=37|TEMP=68|FAN=1180|CPU_W=88|RAM_USED_MB=11850|RAM_MB=31900|DISK=C:62:931,D:40:1863|DISK_T=38,35|GPU=Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|GPU_W=210|VRAM_USED_MB=7500|VRAM_MB=24576">OS page with sample values</option>
+            <option value="SRC=UEFI|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|RAM_MB=32768|BOARD=ASUS PRIME B650-PLUS|BIOS=American Megatrends 3024|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125">Boot page with sample values</option>
+            <option value="SRC=TEXT|TITLE=Hello|L1=#ok:display online|L2=custom text from hwmond|SIZE=2">Text page</option>
+            <option value="SRC=CMD|STANDBY=1">Command: standby (screen off until the next frame)</option>
+            <option value="SRC=CMD|STANDBY=0">Command: wake</option>
+            <option value="SRC=CMD|INFO=1">Command: request device info</option>
+            <option value="SRC=CMD|BL=30">Command: backlight 30 %</option>
+          </select></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary auto" id="btnRawHold">Hold on display</button>
+        <button class="auto" id="btnRawOnce">Send once</button>
+        <span class="muted auto" style="font-size:12px">“Hold” repeats the line every second instead of the monitor frame; “Send once” leaves the current mode alone (the next monitor frame overwrites a data page within a second).</span>
+      </div>
+      <div class="msg" id="msgRaw"></div>
+    </div>
+  </section>
+
+  <section id="daemon">
+    <h2>Daemon</h2>
+    <table>
+      <tr><td>Status</td><td class="v" id="dStatus"></td></tr>
+      <tr><td>Serial port</td><td class="v" id="dPort"></td></tr>
+      <tr><td>Uptime</td><td class="v" id="dUptime"></td></tr>
+      <tr><td>Frames sent</td><td class="v" id="dFrames"></td></tr>
+      <tr><td>Start on login</td><td class="v" id="dAuto"></td></tr>
+      <tr><td>Version</td><td class="v" id="dVer"></td></tr>
+    </table>
+    <label>Last frame sent</label>
+    <div class="mono" id="dLast"></div>
+  </section>
+</main>
+
+<div class="tip" id="tip"></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const DEMO = new URLSearchParams(location.search).get('demo') === '1';
+  const api = async (path, body) => {
+    const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    const r = await fetch(path, opts);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    return j;
+  };
+  const flash = (id, text, cls) => { const m = $(id); m.textContent = text; m.className = 'msg ' + (cls || ''); if (cls === 'ok') setTimeout(() => { if (m.textContent === text) { m.textContent = ''; m.className = 'msg'; } }, 4000); };
+  const fmtDur = s => s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : s < 86400 ? Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm' : Math.floor(s / 86400) + 'd ' + Math.floor(s % 86400 / 3600) + 'h';
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const hhmm = ms => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  const hhmmss = ms => hhmm(ms) + ':' + String(new Date(ms).getSeconds()).padStart(2, '0');
+  const fmtKB = kb => kb >= 1024 ? (kb / 1024).toFixed(kb >= 10240 ? 0 : 1) + ' MB' : kb + ' KB';
+  const fmtRate = bps => bps >= 1024 ? (bps / 1024).toFixed(1) + ' KB/s' : Math.round(bps) + ' B/s';
+
+  // ---- tabs -------------------------------------------------------------------
+  let tab = null, formsLoaded = false;
+  const showTab = t => { tab = t; document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === t)); document.querySelectorAll('.tab').forEach(d => d.classList.toggle('active', d.id === 'tab-' + t)); if (t === 'text') drawPreview(); };
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+  // ---- text page --------------------------------------------------------------
+  const textPage = () => ({ title: $('tTitle').value, lines: $('tLines').value.split('\n'), size: +$('tSize').value, color: $('tColor').value, align: $('tAlign').value });
+  const clean = s => s.replace(/[|=\r\n]/g, ' ').replace(/[^\x20-\x7e]/g, '?').trim().slice(0, 63);
+  const frameOf = t => {
+    const lines = t.lines.slice(); while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    const p = ['SRC=TEXT']; const title = clean(t.title); if (title) p.push('TITLE=' + title);
+    lines.slice(0, 12).forEach((l, i) => p.push('L' + (i + 1) + '=' + clean(l)));
+    p.push('SIZE=' + t.size); if (t.color) p.push('COLOR=' + t.color); if (t.align === 'center') p.push('ALIGN=center');
+    return p.join('|');
+  };
+  const COL = { bg: '#101218', panel: '#1c202a', text: '#e6e8ec', dim: '#8a909c', accent: '#4cc2ff', ok: '#4cd97a', warn: '#ffb83c', hot: '#ff5a5a' };
+  const lineColor = (v, def) => { const m = /^#([a-z]{1,7}):/.exec(v); return m && COL[m[1]] && m[1] !== 'bg' && m[1] !== 'panel' ? [COL[m[1]], v.slice(m[0].length)] : [def, v]; };
+  // Mirrors render_text() in display_core.c: 6x8 font scaled by size, 8 px margins, wrap at the last space that fits.
+  function drawPreview() {
+    const t = textPage(), c = $('preview'), g = c.getContext('2d'), S = 2; // 2x of 320x240
+    g.fillStyle = COL.bg; g.fillRect(0, 0, c.width, c.height);
+    const txt = (x, y, s, col, size) => { g.fillStyle = col; g.font = (8 * size * S) + 'px ' + css('--mono'); g.textBaseline = 'top'; for (let i = 0; i < s.length; i++) g.fillText(s[i], (x + i * 6 * size) * S, (y + 1) * S); };
+    const size = Math.min(4, Math.max(1, t.size)), center = t.align === 'center', def = COL[t.color] || COL.text;
+    let y = 6; let title = clean(t.title); const maxT = Math.floor((320 - 16) / 12); if (title.length > maxT) title = title.slice(0, maxT - 2) + '..';
+    if (title) { txt(center ? (320 - title.length * 12) / 2 : 8, y, title, COL.accent, 2); y += 22; g.fillStyle = COL.panel; g.fillRect(0, y * S, 320 * S, S); y += 6; }
+    const cw = 6 * size, ch = 8 * size, lh = ch + (size > 1 ? 4 : 3), maxc = Math.floor((320 - 16) / cw);
+    const lines = t.lines.slice(0, 12);
+    for (let i = 0; i < lines.length && y + ch <= 240; i++) {
+      let [col, p] = lineColor(clean(lines[i]), def); p = p.replace(/^ +/, '');
+      if (!p) { y += lh; continue; }
+      while (p && y + ch <= 240) {
+        let n = p.length; if (n > maxc) { let k = maxc; while (k > 0 && p[k] !== ' ') k--; n = k > 0 ? k : maxc; }
+        txt(center ? (320 - n * cw) / 2 : 8, y, p.slice(0, n), col, size); y += lh; p = p.slice(n).replace(/^ +/, '');
+      }
+    }
+    $('tFrame').textContent = frameOf(t) + '  (' + frameOf(t).length + ' bytes)';
+  }
+  ['tTitle', 'tLines', 'tSize', 'tColor', 'tAlign'].forEach(id => $(id).addEventListener('input', drawPreview));
+
+  $('btnText').onclick = async () => { try { apply(await api('/api/screen', { mode: 'text', text: textPage() })); flash('msgText', 'On the display.', 'ok'); } catch (e) { flash('msgText', e.message, 'err'); } };
+  $('btnMonitor').onclick = async () => { try { apply(await api('/api/screen', { mode: 'monitor' })); flash('msgMonitor', 'Back to the hardware monitor (next frame within a second).', 'ok'); } catch (e) { flash('msgMonitor', e.message, 'err'); } };
+  $('btnRawHold').onclick = async () => { try { apply(await api('/api/screen', { mode: 'raw', raw: $('rawLine').value })); flash('msgRaw', 'Held on the display.', 'ok'); } catch (e) { flash('msgRaw', e.message, 'err'); } };
+  $('btnRawOnce').onclick = async () => { try { const r = await api('/api/send', { line: $('rawLine').value }); flash('msgRaw', 'Sent: ' + r.sent, 'ok'); if (/^SRC=CMD\|INFO=/.test(r.sent)) setTimeout(refresh, 600); } catch (e) { flash('msgRaw', e.message, 'err'); } };
+  $('rawExamples').onchange = e => { if (e.target.value) { $('rawLine').value = e.target.value; e.target.value = ''; } };
+
+  // ---- device: details table ---------------------------------------------------
+  const RESET = ['unknown', 'power-on', 'external pin', 'software', 'panic', 'interrupt watchdog', 'task watchdog', 'other watchdog', 'deep sleep', 'brownout', 'SDIO', 'USB', 'JTAG', 'eFuse error', 'power glitch', 'CPU lock-up'];
+  const LABEL = { FW: 'Firmware', BOARD: 'Board', CHIP: 'Chip', REV: 'Chip revision', CORES: 'CPU cores', CPU_MHZ: 'CPU clock', FLASH_MB: 'Flash chip', PSRAM_KB: 'PSRAM', PSRAM_FREE_KB: 'PSRAM free', HEAP_TOTAL_KB: 'Heap total', HEAP_KB: 'Heap free', HEAP_MIN_KB: 'Heap lowest free', SKETCH_KB: 'Sketch size', APP_FREE_KB: 'App partition free', SDK: 'ESP-IDF', CORE: 'Arduino core', UP_S: 'Uptime', RX_BYTES: 'Bytes received', FRAMES: 'Frames received', SPRITE: 'Full-frame buffer', BL: 'Backlight', STANDBY: 'Standby', RESET: 'Last reset', TEMP: 'Chip temperature', MAC: 'Chip ID (MAC)' };
+  const fmtDev = (k, v) => { switch (k) {
+    case 'CPU_MHZ': return v + ' MHz'; case 'FLASH_MB': return v + ' MB'; case 'PSRAM_KB': return v === '0' ? 'none' : fmtKB(+v);
+    case 'PSRAM_FREE_KB': case 'HEAP_TOTAL_KB': case 'HEAP_KB': case 'HEAP_MIN_KB': case 'SKETCH_KB': case 'APP_FREE_KB': return fmtKB(+v); case 'UP_S': return fmtDur(+v);
+    case 'RX_BYTES': case 'FRAMES': return (+v).toLocaleString(); case 'SPRITE': return v === '1' ? 'yes (flicker-free)' : 'no (direct drawing)';
+    case 'BL': return v + ' %'; case 'STANDBY': return v === '1' ? 'yes' : 'no'; case 'RESET': return RESET[+v] || v; case 'TEMP': return v + ' °C'; default: return v; } };
+  let lastDevAge = null, devFields = null;
+  function renderDevice(d) {
+    if (!d || d.age_s < 0 || !d.order) return;
+    devFields = d.fields;
+    $('devEmpty').style.display = 'none';
+    $('devName').textContent = [d.fields.BOARD, d.fields.CHIP, d.fields.FW && 'fw ' + d.fields.FW].filter(Boolean).join(' · ');
+    $('devAge').textContent = d.age_s < 2 ? 'updated just now' : 'updated ' + fmtDur(d.age_s) + ' ago';
+    const rows = d.order.filter(k => k !== 'SRC').map(k => `<tr><td>${LABEL[k] || k}</td><td class="v">${esc(fmtDev(k, d.fields[k]))}</td></tr>`);
+    $('devTable').innerHTML = rows.join('');
+    if (d.fields.BL !== undefined && document.activeElement !== $('bl')) { $('bl').value = d.fields.BL; $('blVal').textContent = d.fields.BL + ' %'; }
+    $('kUp').textContent = d.fields.UP_S ? fmtDur(+d.fields.UP_S) : '–';
+    $('kUpSub').textContent = d.fields.RESET !== undefined ? 'since ' + (RESET[+d.fields.RESET] || 'reset') + (d.fields.CPU_MHZ ? ' · ' + d.fields.CPU_MHZ + ' MHz' : '') : '';
+    renderMeters(d.fields);
+  }
+  $('btnRefresh').onclick = async () => { $('btnRefresh').disabled = true; flash('msgDevice', 'asking the display…'); try { const r = await api('/api/device/refresh', {}); renderDevice(r.device); await loadHistory(); flash('msgDevice', 'Updated.', 'ok'); } catch (e) { flash('msgDevice', e.message, 'err'); } $('btnRefresh').disabled = false; };
+  let blTimer = null;
+  $('bl').oninput = () => { $('blVal').textContent = $('bl').value + ' %'; clearTimeout(blTimer); blTimer = setTimeout(async () => { try { await api('/api/device/backlight', { percent: +$('bl').value }); flash('msgDevice', 'Backlight ' + $('bl').value + ' %', 'ok'); } catch (e) { flash('msgDevice', e.message, 'err'); } }, 250); };
+
+  // ---- device: storage meters (one ratio against a limit each) -----------------
+  function renderMeters(f) {
+    const n = k => f[k] === undefined ? null : +f[k];
+    const items = [];
+    const sk = n('SKETCH_KB'), af = n('APP_FREE_KB');
+    if (sk !== null) items.push({ name: 'Flash · app partition', used: sk, total: af !== null ? sk + af : null, note: af === null ? 'partition size unknown on this firmware' : '' });
+    const ht = n('HEAP_TOTAL_KB'), hf = n('HEAP_KB');
+    if (ht && hf !== null) items.push({ name: 'RAM · heap', used: ht - hf, total: ht, note: n('HEAP_MIN_KB') !== null ? 'peak use ' + fmtKB(ht - n('HEAP_MIN_KB')) : '' });
+    const pt = n('PSRAM_KB'), pf = n('PSRAM_FREE_KB');
+    if (pt) items.push({ name: 'PSRAM', used: pf !== null ? pt - pf : null, total: pt, note: '' });
+    const fm = n('FLASH_MB'); if (fm) items.push({ name: 'Flash chip', used: null, total: fm * 1024, note: fm + ' MB total; the app partition above is the part the sketch can use' });
+    $('meters').innerHTML = items.map(it => {
+      const pct = it.used !== null && it.total ? Math.min(100, Math.round(100 * it.used / it.total)) : null;
+      const sev = pct === null ? '' : pct >= 92 ? 'critical' : pct >= 80 ? 'warning' : '';
+      const state = sev === 'critical' ? '⚠ critical — almost full' : sev === 'warning' ? '⚠ high' : it.note;
+      const right = pct === null ? (it.total ? fmtKB(it.total) : '–') : `${fmtKB(it.used)} / ${fmtKB(it.total)} · ${pct}%`;
+      return `<div class="meter ${sev}" role="meter" aria-valuemin="0" aria-valuemax="100" ${pct === null ? '' : `aria-valuenow="${pct}"`} aria-label="${esc(it.name)}">
+        <div class="top"><b>${esc(it.name)}</b><span>${esc(right)}</span></div>
+        <div class="track"><div class="fill" style="width:${pct === null ? 0 : pct}%"></div></div>
+        <div class="state">${esc(state)}</div></div>`;
+    }).join('') || '<div class="hint">No storage figures in the device info.</div>';
+  }
+
+  // ---- device: history charts ---------------------------------------------------
+  let samples = [], everyS = 10, tableOpen = false;
+  const niceStep = r => { const p = Math.pow(10, Math.floor(Math.log10(r || 1))); const f = r / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; };
+  const svgEl = (tag, attrs, parent) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const tip = $('tip');
+
+  // One line chart: series = [{name, color, vals:[number|null], emphasis}], x = sample times. Hairline grid, 2 px lines,
+  // ≥8 px end marker with a 2 px surface ring, the current value labelled at the line end, crosshair + tooltip on hover.
+  function lineChart(box, times, series, opt) {
+    box.querySelectorAll('svg, .hover').forEach(e => e.remove());
+    const W = Math.max(240, box.clientWidth), H = 190, padL = 44, padR = 54, padT = 10, padB = 24;
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H }, box);
+    const pts = times.length;
+    if (pts < 2) { svgEl('text', { x: padL, y: H / 2, class: 'empty' }, svg).textContent = pts === 0 ? 'waiting for the first samples…' : 'one sample so far — the line starts with the next one in ' + everyS + ' s'; return; }
+    let lo = Infinity, hi = -Infinity;
+    series.forEach(s => s.vals.forEach(v => { if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }));
+    if (lo === Infinity) { svgEl('text', { x: padL, y: H / 2, class: 'empty' }, svg).textContent = opt.missing || 'not reported by this firmware'; return; }
+    if (hi === lo) { hi += 1; lo -= 1; }
+    const span = hi - lo, step = niceStep(span / 3);
+    let y0 = Math.floor((lo - span * .08) / step) * step, y1 = Math.ceil((hi + span * .08) / step) * step;
+    if (opt.floorZero && y0 < 0) y0 = 0;
+    const x0 = times[0], x1 = times[pts - 1];
+    const X = t => padL + (t - x0) / (x1 - x0 || 1) * (W - padL - padR), Y = v => padT + (y1 - v) / (y1 - y0) * (H - padT - padB);
+    // grid + y ticks
+    const grid = svgEl('g', { class: 'grid' }, svg), axis = svgEl('g', { class: 'axis' }, svg);
+    for (let v = y0; v <= y1 + 1e-9; v += step) {
+      const y = Y(v); svgEl('line', { x1: padL, x2: W - padR, y1: y, y2: y }, grid);
+      svgEl('text', { x: padL - 8, y: y + 4, 'text-anchor': 'end' }, axis).textContent = opt.fmt ? opt.fmt(v) : v;
+    }
+    svgEl('line', { x1: padL, x2: W - padR, y1: Y(y0), y2: Y(y0), class: 'baseline' }, svg);
+    // x ticks: round times, ~4 labels
+    const spanMs = x1 - x0, tickMs = [60e3, 120e3, 300e3, 600e3, 900e3, 1800e3, 3600e3].find(m => spanMs / m <= 5) || 3600e3;
+    for (let t = Math.ceil(x0 / tickMs) * tickMs; t <= x1; t += tickMs) svgEl('text', { x: X(t), y: H - 6, 'text-anchor': 'middle' }, axis).textContent = hhmm(t);
+    // series
+    series.forEach(s => {
+      let d = '', pen = false;
+      s.vals.forEach((v, i) => { if (v === null) { pen = false; return; } d += (pen ? 'L' : 'M') + X(times[i]).toFixed(1) + ' ' + Y(v).toFixed(1); pen = true; });
+      if (s.emphasis && series.length === 1) { // single series: a faint wash under the line
+        let last = -1; for (let i = s.vals.length - 1; i >= 0; i--) if (s.vals[i] !== null) { last = i; break; }
+        let first = s.vals.findIndex(v => v !== null);
+        if (first >= 0 && last > first) svgEl('path', { d: d + ` L${X(times[last]).toFixed(1)} ${Y(y0)} L${X(times[first]).toFixed(1)} ${Y(y0)} Z`, fill: css('--viz-s1-wash') }, svg);
+      }
+      svgEl('path', { d, class: 'ser', stroke: s.color }, svg);
+      let li = -1; for (let i = s.vals.length - 1; i >= 0; i--) if (s.vals[i] !== null) { li = i; break; }
+      if (li >= 0 && s.emphasis) {
+        const cx = X(times[li]), cy = Y(s.vals[li]);
+        svgEl('circle', { cx, cy, r: 4, fill: s.color, stroke: css('--panel'), 'stroke-width': 2 }, svg);
+        svgEl('text', { x: cx + 9, y: cy + 4, class: 'endlbl' }, svg).textContent = (opt.fmt ? opt.fmt(s.vals[li]) : s.vals[li]) + (opt.unit || '');
+      }
+    });
+    // hover layer
+    const hover = document.createElement('div'); hover.className = 'hover'; box.appendChild(hover);
+    const cross = svgEl('g', { style: 'display:none' }, svg);
+    const cl = svgEl('line', { y1: padT, y2: H - padB, class: 'baseline' }, cross);
+    const dots = series.map(s => svgEl('circle', { r: 4, fill: s.color, stroke: css('--panel'), 'stroke-width': 2 }, cross));
+    const move = e => {
+      const r = box.getBoundingClientRect(), mx = (e.clientX - r.left) * W / r.width;
+      let best = 0, bd = Infinity; for (let i = 0; i < pts; i++) { const d = Math.abs(X(times[i]) - mx); if (d < bd) { bd = d; best = i; } }
+      const x = X(times[best]); cl.setAttribute('x1', x); cl.setAttribute('x2', x); cross.style.display = '';
+      series.forEach((s, i) => { const v = s.vals[best]; dots[i].style.display = v === null ? 'none' : ''; if (v !== null) { dots[i].setAttribute('cx', x); dots[i].setAttribute('cy', Y(v)); } });
+      tip.innerHTML = `<div class="t">${hhmmss(times[best])}</div>` + series.map(s => `<div><i style="background:${s.color}"></i>${esc(s.name)}: <b>${s.vals[best] === null ? '–' : (opt.fmt ? opt.fmt(s.vals[best]) : s.vals[best]) + (opt.unit || '')}</b></div>`).join('');
+      tip.style.display = 'block';
+      const tw = tip.offsetWidth, px = e.clientX + 14 + tw > innerWidth ? e.clientX - tw - 14 : e.clientX + 14;
+      tip.style.left = px + scrollX + 'px'; tip.style.top = e.clientY + scrollY - 10 + 'px';
+    };
+    hover.addEventListener('pointermove', move); hover.addEventListener('pointerdown', move);
+    hover.addEventListener('pointerleave', () => { cross.style.display = 'none'; tip.style.display = 'none'; });
+  }
+
+  // 12-point sparkline: de-emphasis gray, the last step + end dot in the series hue.
+  function spark(svg, vals, color) {
+    svg.innerHTML = ''; const v = vals.filter(x => x !== null).slice(-12); if (v.length < 2) return;
+    const W = 72, H = 28, lo = Math.min(...v), hi = Math.max(...v), rng = hi - lo || 1;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const P = v.map((y, i) => [2 + i * (W - 4) / (v.length - 1), 3 + (H - 6) * (1 - (y - lo) / rng)]);
+    const d = a => a.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
+    svgEl('path', { d: d(P.slice(0, -1)), fill: 'none', stroke: css('--viz-gray'), 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, svg);
+    svgEl('path', { d: d(P.slice(-2)), fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linecap': 'round' }, svg);
+    const e = P[P.length - 1]; svgEl('circle', { cx: e[0], cy: e[1], r: 3.5, fill: color, stroke: css('--bg'), 'stroke-width': 2 }, svg);
+  }
+
+  function renderHistory() {
+    const S = samples, n = S.length, s1 = css('--viz-s1'), gray = css('--viz-gray');
+    const times = S.map(x => x.t);
+    const temp = S.map(x => x.temp > -50 ? x.temp : null), heap = S.map(x => x.heap_kb >= 0 ? x.heap_kb : null), hmin = S.map(x => x.heap_min_kb >= 0 ? x.heap_min_kb : null);
+    // link rate from the device's own byte counter; a reset (counter went down) breaks the series
+    const rate = S.map((x, i) => i && x.rx_bytes >= 0 && S[i - 1].rx_bytes >= 0 && x.rx_bytes >= S[i - 1].rx_bytes && x.t > S[i - 1].t ? (x.rx_bytes - S[i - 1].rx_bytes) * 1000 / (x.t - S[i - 1].t) : null);
+    const fps = S.map((x, i) => i && x.frames >= 0 && S[i - 1].frames >= 0 && x.frames >= S[i - 1].frames && x.t > S[i - 1].t ? (x.frames - S[i - 1].frames) * 1000 / (x.t - S[i - 1].t) : null);
+    const last = a => { for (let i = a.length - 1; i >= 0; i--) if (a[i] !== null) return a[i]; return null; };
+    const ago = (a, ms) => { if (!n) return null; const t0 = times[n - 1] - ms; for (let i = n - 1; i >= 0; i--) if (times[i] <= t0) return a[i]; return null; };
+    // tiles
+    const lt = last(temp); $('kTemp').innerHTML = lt === null ? '–' : lt + '<small>°C</small>';
+    const t10 = ago(temp, 600e3); $('kTempSub').innerHTML = lt !== null && t10 !== null ? (lt - t10 === 0 ? 'unchanged' : `<span class="${lt > t10 ? 'down' : 'up'}">${lt > t10 ? '▲' : '▼'} ${Math.abs(lt - t10)} °C</span> vs 10 min ago`) : (lt === null && n ? 'no sensor on this chip' : '');
+    const lh = last(heap); $('kHeap').innerHTML = lh === null ? '–' : (lh >= 1024 ? (lh / 1024).toFixed(1) + '<small>MB</small>' : lh + '<small>KB</small>');
+    const lm = last(hmin); $('kHeapSub').textContent = lm !== null ? 'lowest since boot ' + fmtKB(lm) : '';
+    const lr = last(rate); $('kLink').innerHTML = lr === null ? '–' : fmtRate(lr).replace(/ (\S+)$/, '<small>$1</small>');
+    const lf = last(fps); $('kLinkSub').textContent = lf !== null ? lf.toFixed(1) + ' frames/s' + (last(S.map(x => x.standby ? 1 : 0)) ? ' · display in standby' : '') : '';
+    spark($('sTemp'), temp, s1); spark($('sHeap'), heap, s1); spark($('sLink'), rate, s1);
+    // charts
+    lineChart($('cTemp'), times, [{ name: 'chip temperature', color: s1, vals: temp, emphasis: true }], { unit: ' °C', missing: 'this chip reports no temperature' });
+    lineChart($('cHeap'), times, [{ name: 'free now', color: s1, vals: heap, emphasis: true }, { name: 'lowest since boot', color: gray, vals: hmin, emphasis: false }], { unit: ' KB', fmt: v => Math.round(v).toLocaleString(), floorZero: true });
+    // table view (the WCAG twin of the charts)
+    if (tableOpen) {
+      const rows = S.slice(-60).reverse().map((x, j) => { const i = n - 1 - j; return `<tr><td>${hhmmss(x.t)}</td><td>${temp[i] === null ? '–' : temp[i]}</td><td>${heap[i] === null ? '–' : heap[i].toLocaleString()}</td><td>${hmin[i] === null ? '–' : hmin[i].toLocaleString()}</td><td>${rate[i] === null ? '–' : Math.round(rate[i])}</td><td>${fps[i] === null ? '–' : fps[i].toFixed(1)}</td><td>${x.cpu_mhz > 0 ? x.cpu_mhz : '–'}</td><td>${x.standby ? 'yes' : 'no'}</td></tr>`; });
+      $('samples').innerHTML = `<table><thead><tr><th>time</th><th>temp °C</th><th>heap free KB</th><th>heap low KB</th><th>B/s</th><th>frames/s</th><th>MHz</th><th>standby</th></tr></thead><tbody>${rows.join('')}</tbody></table>` + (n > 60 ? `<p class="hint">last 60 of ${n} samples</p>` : '');
+    }
+  }
+  $('btnTable').onclick = () => { tableOpen = !tableOpen; $('samples').style.display = tableOpen ? '' : 'none'; $('btnTable').textContent = tableOpen ? 'Hide table' : 'Show as table'; renderHistory(); };
+  let rsz = null; addEventListener('resize', () => { clearTimeout(rsz); rsz = setTimeout(renderHistory, 150); });
+
+  async function loadHistory() {
+    if (DEMO) return;
+    try { const h = await api('/api/history'); samples = h.samples || []; everyS = h.every_s || 10; renderHistory(); } catch (e) { /* keep the previous render */ }
+  }
+
+  // ---- demo data (?demo=1): shows the dashboard without a board ---------------
+  function demo() {
+    const now = Date.now(), S = []; let rx = 1.2e6, fr = 5000, temp = 39, heap = 142, hmin = 138;
+    for (let i = 119; i >= 0; i--) {
+      const t = now - i * 10e3; temp += (Math.random() - .5) * 1.2 + (i < 40 ? .08 : 0); heap += (Math.random() - .5) * 3; if (heap < hmin) hmin = heap;
+      rx += 2400 + Math.random() * 300; fr += 10;
+      S.push({ t, temp: Math.round(temp), heap_kb: Math.round(heap), heap_min_kb: Math.round(hmin), rx_bytes: Math.round(rx), frames: fr, up_s: 86400 + (119 - i) * 10, cpu_mhz: 240, standby: false });
+    }
+    samples = S; renderHistory();
+    const fields = { SRC: 'DEV', FW: '1.2', BOARD: 'ES3C28P', CHIP: 'ESP32-S3', REV: '2', CORES: '2', CPU_MHZ: '240', FLASH_MB: '16', PSRAM_KB: '0', PSRAM_FREE_KB: '0', HEAP_TOTAL_KB: '320', HEAP_KB: String(S[119].heap_kb), HEAP_MIN_KB: String(S[119].heap_min_kb), SKETCH_KB: '359', APP_FREE_KB: '921', SDK: 'v5.5.1', CORE: '3.3.12', UP_S: String(S[119].up_s), RX_BYTES: String(S[119].rx_bytes), FRAMES: String(S[119].frames), SPRITE: '1', BL: '100', STANDBY: '0', RESET: '1', TEMP: String(S[119].temp), MAC: 'F412FA123456' };
+    renderDevice({ fields, order: Object.keys(fields), age_s: 1 });
+    $('devAge').textContent += ' · demo data';
+  }
+
+  // ---- state polling ----------------------------------------------------------
+  function apply(s) {
+    $('ver').textContent = 'hwmond ' + s.version + ' · ' + s.os;
+    const c = $('conn'); c.textContent = s.status; c.className = 'pill ' + (s.connected ? 'on' : /wait|search/i.test(s.status) ? 'wait' : 'off');
+    $('shows').textContent = 'display shows: ' + ({ monitor: 'hardware monitor', text: 'custom text', raw: 'raw frame' }[s.mode] || s.mode);
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('live', b.dataset.tab === s.mode));
+    $('screenNote').textContent = s.connected ? '' : 'no display connected: changes are sent as soon as one appears';
+    $('dStatus').textContent = s.status; $('dPort').textContent = s.port || '–'; $('dUptime').textContent = fmtDur(s.uptime_s);
+    $('dFrames').textContent = s.frames_sent.toLocaleString(); $('dAuto').textContent = s.autostart ? 'on' : 'off'; $('dVer').textContent = s.version;
+    $('dLast').textContent = s.last_frame || '–';
+    const chips = $('chips'); chips.innerHTML = '';
+    if (s.last_frame) s.last_frame.split('|').forEach(kv => { const [k, v] = kv.split(/=(.*)/); const el = document.createElement('span'); el.className = 'chip'; el.innerHTML = '<b>' + esc(k) + '</b>=' + esc(v ?? ''); chips.appendChild(el); });
+    if (s.backlight >= 0 && document.activeElement !== $('bl') && (!s.device || s.device.age_s < 0)) { $('bl').value = s.backlight; $('blVal').textContent = s.backlight + ' %'; }
+    if (!DEMO && s.device && s.device.age_s !== lastDevAge) { lastDevAge = s.device.age_s; renderDevice(s.device); if (s.device.age_s < 3) loadHistory(); }
+    if (!formsLoaded) {
+      formsLoaded = true;
+      const t = s.text || {};
+      if ((t.lines || []).some(l => l.trim()) || t.title) { $('tTitle').value = t.title || ''; $('tLines').value = (t.lines || []).join('\n'); $('tSize').value = t.size || 2; $('tColor').value = t.color || ''; $('tAlign').value = t.align || 'left'; }
+      else { $('tTitle').value = 'Hello'; $('tLines').value = '#ok:display online\ncustom text from hwmond\n\n#dim:edit me in the control panel'; }
+      if (s.raw) $('rawLine').value = s.raw;
+      showTab(s.mode === 'raw' ? 'raw' : s.mode === 'text' ? 'text' : 'monitor');
+      drawPreview();
+    }
+  }
+  async function refresh() { try { apply(await api('/api/state')); } catch (e) { const c = $('conn'); c.textContent = 'hwmond not reachable'; c.className = 'pill off'; } }
+  refresh(); setInterval(refresh, 2000);
+  if (DEMO) demo(); else { loadHistory(); setInterval(loadHistory, 10000); }
+  renderHistory();
+})();
+</script>
+</body>
+</html>

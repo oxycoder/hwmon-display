@@ -28,6 +28,7 @@ const (
 	watcherPath = dbus.ObjectPath("/StatusNotifierWatcher")
 
 	idStatus    = 1
+	idPanel     = 5
 	idAutostart = 3
 	idQuit      = 4
 )
@@ -74,7 +75,7 @@ var tray *linuxTray
 
 // ---- org.kde.StatusNotifierItem methods (clicks open the menu host-side) ----
 
-func (t *linuxTray) Activate(x, y int32) *dbus.Error          { return nil }
+func (t *linuxTray) Activate(x, y int32) *dbus.Error          { openPanel(); return nil } // left click (hosts that honour ItemIsMenu show the menu instead)
 func (t *linuxTray) SecondaryActivate(x, y int32) *dbus.Error { return nil }
 func (t *linuxTray) ContextMenu(x, y int32) *dbus.Error       { return nil }
 func (t *linuxTray) Scroll(delta int32, o string) *dbus.Error { return nil }
@@ -90,12 +91,17 @@ func (m *dbusMenu) items() []menuItem {
 	if autostartEnabled() {
 		auto = 1
 	}
-	return []menuItem{
+	items := []menuItem{
 		{ID: idStatus, Props: map[string]dbus.Variant{"label": v("hwmond: " + getStatus()), "enabled": v(false)}},
 		{ID: 2, Props: map[string]dbus.Variant{"type": v("separator")}},
-		{ID: idAutostart, Props: map[string]dbus.Variant{"label": v("Start on login"), "toggle-type": v("checkmark"), "toggle-state": v(auto)}},
-		{ID: idQuit, Props: map[string]dbus.Variant{"label": v("Quit")}},
 	}
+	if panelURL() != "" {
+		items = append(items, menuItem{ID: idPanel, Props: map[string]dbus.Variant{"label": v("Open control panel")}})
+	}
+	return append(items,
+		menuItem{ID: idAutostart, Props: map[string]dbus.Variant{"label": v("Start on login"), "toggle-type": v("checkmark"), "toggle-state": v(auto)}},
+		menuItem{ID: idQuit, Props: map[string]dbus.Variant{"label": v("Quit")}},
+	)
 }
 
 func (m *dbusMenu) find(id int32) (menuItem, bool) {
@@ -159,6 +165,8 @@ func (m *dbusMenu) Event(id int32, eventID string, data dbus.Variant, ts uint32)
 		return nil
 	}
 	switch id {
+	case idPanel:
+		openPanel()
 	case idAutostart:
 		toggleAutostart()
 		m.t.layoutChanged()
