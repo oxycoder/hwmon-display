@@ -164,9 +164,35 @@ func (m *dbusMenu) Event(id int32, eventID string, data dbus.Variant, ts uint32)
 		m.t.layoutChanged()
 	case idQuit:
 		m.t.conn.Close()
+		sendStandby()
 		os.Exit(0)
 	}
 	return nil
+}
+
+// hookShutdown: shutdown and logout already reach hwmond as SIGTERM (systemd,
+// the desktop session). Suspend does not, so listen for logind's
+// PrepareForSleep(true) on the system bus and park the display right away;
+// the main loop reconnects on the first write after resume.
+func hookShutdown() {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return // no logind / no system bus: the firmware's silence timeout still covers it
+	}
+	if err := conn.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.login1.Manager"),
+		dbus.WithMatchMember("PrepareForSleep")); err != nil {
+		conn.Close()
+		return
+	}
+	sig := make(chan *dbus.Signal, 4)
+	conn.Signal(sig)
+	go func() {
+		for s := range sig {
+			if len(s.Body) == 1 && s.Body[0] == true {
+				sendStandby()
+			}
+		}
+	}()
 }
 
 func (m *dbusMenu) EventGroup(events []menuEvent) ([]int32, *dbus.Error) {

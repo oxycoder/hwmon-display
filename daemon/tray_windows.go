@@ -48,6 +48,9 @@ var (
 const (
 	wmDestroy     = 0x0002
 	wmClose       = 0x0010
+	wmEndSession  = 0x0016 // wParam != 0: the session really is ending
+	wmPowerBcast  = 0x0218 // WM_POWERBROADCAST
+	pbtSuspend    = 0x0004 // PBT_APMSUSPEND: the PC is going to sleep now
 	wmLButtonUp   = 0x0202
 	wmRButtonUp   = 0x0205
 	wmApp         = 0x8000
@@ -140,9 +143,12 @@ func startTray() error {
 		}
 		tc, _ := syscall.UTF16PtrFromString("TaskbarCreated")
 		taskbarCreated, _, _ = procRegisterWindowMsg.Call(uintptr(unsafe.Pointer(tc)))
-		const hwndMessage = ^uintptr(2) // HWND_MESSAGE: message-only window, never shown
+		// A hidden top-level window (parent 0, no WS_VISIBLE) rather than a
+		// HWND_MESSAGE one: message-only windows never get the WM_ENDSESSION
+		// broadcast, and that is how a tray-only process learns the OS is
+		// shutting down so it can put the display into standby.
 		hwnd, _, e := procCreateWindowEx.Call(0, uintptr(unsafe.Pointer(cls)), uintptr(unsafe.Pointer(cls)),
-			0, 0, 0, 0, 0, hwndMessage, 0, hinst, 0)
+			0, 0, 0, 0, 0, 0, 0, hinst, 0)
 		if hwnd == 0 {
 			done <- fmt.Errorf("CreateWindowEx: %v", e)
 			return
@@ -200,6 +206,12 @@ func trayWndProc(hwnd uintptr, m uint32, wParam, lParam uintptr) uintptr {
 	case m == wmClose:
 		trayQuit(hwnd)
 		return 0
+	case m == wmEndSession && wParam != 0:
+		sendStandby() // shutdown / logoff: the display would otherwise wait out its silence timeout
+		return 0
+	case m == wmPowerBcast && wParam == pbtSuspend:
+		sendStandby() // sleep / hibernate: dark now, not a minute later; the main loop reconnects on resume
+		return 1
 	case m == wmDestroy:
 		procPostQuitMessage.Call(0)
 		return 0
@@ -242,8 +254,30 @@ func showMenu(hwnd uintptr) {
 
 func trayQuit(hwnd uintptr) {
 	notify(nimDelete, hwnd)
+	sendStandby()
 	os.Exit(0)
 }
+
+// hookShutdown registers a console control handler so hwmond run from a
+// terminal (or with -tray=false) also parks the display on Ctrl-C / window
+// close / logoff / shutdown. Go's os/signal only maps the first two to
+// os.Interrupt; with -tray the console is usually gone and WM_ENDSESSION on
+// the tray window covers shutdown instead.
+func hookShutdown() {
+	procSetConsoleCtrlHandler.Call(consoleCtrlCB, 1)
+}
+
+var (
+	procSetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
+	consoleCtrlCB             = syscall.NewCallback(func(ctrlType uint32) uintptr {
+		// CTRL_C 0, CTRL_BREAK 1, CTRL_CLOSE 2, CTRL_LOGOFF 5, CTRL_SHUTDOWN 6
+		sendStandby()
+		if ctrlType >= 2 { // the system kills the process when this returns; exit on our terms
+			os.Exit(0)
+		}
+		return 0 // Ctrl-C/Break: let os/signal's handler finish the job
+	})
+)
 
 var (
 	procLoadImage        = user32.NewProc("LoadImageW")

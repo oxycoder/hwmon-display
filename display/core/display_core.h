@@ -42,14 +42,21 @@ typedef struct {
     uint32_t frames;            /* frames received so far */
     uint32_t rx_bytes;          /* raw bytes received (debug) */
     uint32_t last_rx_ms;        /* for the "no signal" state */
+    uint8_t  standby_req;       /* host sent "SRC=CMD|STANDBY=1": stay dark until the next data frame */
 } dc_state;
 
 void        dc_init(dc_state *s);
-/* Feed one byte from the UART. Returns 1 when a complete frame was parsed. */
+/* Feed one byte from the UART. Returns 1 when a complete frame was parsed
+   (a data frame to render, or a CMD frame — check dc_standby()). */
 int         dc_feed(dc_state *s, uint8_t byte, uint32_t now_ms);
 const char *dc_get(const dc_state *s, const char *key);       /* "" if absent */
 /* Redraw the whole screen from the current state. */
 void        dc_render(const dc_state *s, const dc_gfx *g, uint32_t now_ms);
+/* Standby: 1 when the panel should be dark — the host asked for it
+   ("SRC=CMD|STANDBY=1", sent by hwmond on quit / OS shutdown) or nothing has
+   arrived for `timeout_ms` (0 = never time out; counts from power-on when no
+   frame was ever received). Any later data frame clears it. */
+int         dc_standby(const dc_state *s, uint32_t now_ms, uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

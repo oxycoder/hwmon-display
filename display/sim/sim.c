@@ -114,6 +114,14 @@ int main(int argc, char **argv)
     while ((r = read(fd, buf, sizeof buf)) > 0) {
         for (ssize_t i = 0; i < r; i++) {
             if (dc_feed(&st, buf[i], now_ms())) {
+                if (dc_standby(&st, now_ms(), 0)) {       /* host said SRC=CMD|STANDBY=1: panel goes dark */
+                    fill_rect(0, 0, DC_W, DC_H, 0);
+                    snprintf(path, sizeof path, "%s/frame-%04d-STANDBY.png", argv[2], ++n);
+                    write_png(path);
+                    printf("frame %d (STANDBY): display off -> %s\n", n, path);
+                    fflush(stdout);
+                    continue;
+                }
                 dc_render(&st, &gfx, now_ms());
                 snprintf(path, sizeof path, "%s/frame-%04d-%s.png", argv[2], ++n, dc_get(&st, "SRC"));
                 write_png(path);

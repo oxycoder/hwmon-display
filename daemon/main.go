@@ -19,11 +19,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -49,10 +51,14 @@ func main() {
 		}
 	}
 
+	if !*once {
+		standbyOnExit()
+	}
 	cpu := newCPULoad()
 	static := staticInfo()
 	for {
 		w := connect(*port, *once)
+		curPort.Store(w)
 		for {
 			line := static + "|" + dynamicInfo(cpu) + "\n"
 			if _, err := w.WriteString(line); err != nil {
@@ -60,6 +66,7 @@ func main() {
 				if *once || w == os.Stdout {
 					os.Exit(1)
 				}
+				curPort.Store((*os.File)(nil))
 				w.Close() // display unplugged / re-enumerated: go back to detection
 				setStatus("display disconnected, searching...")
 				break
@@ -103,6 +110,44 @@ func connect(port string, once bool) *os.File {
 		}
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// ---------- display standby -------------------------------------------------
+
+// curPort is the serial port frames currently go to (nil while searching).
+var curPort atomic.Pointer[os.File]
+
+// standbyLine is the control frame that puts the display to sleep right away.
+// The firmware also sleeps on its own after a minute of silence; this just
+// skips the wait when hwmond quits or the OS shuts down. The next data frame
+// wakes the display.
+const standbyLine = "SRC=CMD|STANDBY=1\n"
+
+// sendStandby writes the standby frame to the display, if one is connected.
+// Safe to call more than once and from any goroutine.
+func sendStandby() {
+	f := curPort.Swap((*os.File)(nil))
+	if f == nil || f == os.Stdout {
+		return
+	}
+	f.WriteString(standbyLine)
+	time.Sleep(100 * time.Millisecond) // let the USB/UART drain before the process dies
+	f.Close()
+}
+
+// standbyOnExit arranges for sendStandby to run when hwmond is told to stop:
+// SIGINT/SIGTERM (Ctrl-C, systemd stop, session end on Linux), plus the
+// per-OS shutdown hooks in hookShutdown (Windows console control events and
+// WM_ENDSESSION on the tray window). The tray's Quit calls it directly.
+func standbyOnExit() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ch
+		sendStandby()
+		os.Exit(0)
+	}()
+	hookShutdown()
 }
 
 // usbIDs lists VID:PID pairs (lower-case hex) that are known display MCUs.

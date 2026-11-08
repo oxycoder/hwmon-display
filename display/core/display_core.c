@@ -37,10 +37,17 @@ int dc_feed(dc_state *s, uint8_t b, uint32_t now_ms)
            (firmware console echo, ANSI escapes, noise) is ignored, and the
            previous good frame stays on screen. */
         if (s->linelen > 4 && !memcmp(s->line, "SRC=", 4)) {
-            parse_line(s);
-            s->frames++;
-            s->last_rx_ms = now_ms;
-            ok = s->nfields > 0;
+            if (!memcmp(s->line, "SRC=CMD", 7) && (s->line[7] == '|' || s->line[7] == 0)) {
+                /* Control frame from the host: does not replace the data on
+                   screen, so the last readings come back on wake. */
+                if (strstr(s->line, "|STANDBY=1")) { s->standby_req = 1; ok = 1; }
+            } else {
+                parse_line(s);
+                s->frames++;
+                s->last_rx_ms = now_ms;
+                s->standby_req = 0;          /* any data frame wakes the panel */
+                ok = s->nfields > 0;
+            }
         }
         s->linelen = 0;
         return ok;
@@ -48,6 +55,12 @@ int dc_feed(dc_state *s, uint8_t b, uint32_t now_ms)
     if (s->linelen < DC_MAX_LINE - 1) s->line[s->linelen++] = (char)b;
     else s->linelen = 0;                     /* overflow: drop the garbage line */
     return 0;
+}
+
+int dc_standby(const dc_state *s, uint32_t now_ms, uint32_t timeout_ms)
+{
+    if (s->standby_req) return 1;
+    return timeout_ms && now_ms - s->last_rx_ms >= timeout_ms;
 }
 
 const char *dc_get(const dc_state *s, const char *key)

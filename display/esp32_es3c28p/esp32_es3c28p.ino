@@ -47,6 +47,36 @@ static void render(uint32_t now)
     if (useSprite) frame.pushSprite(0, 0);
 }
 
+/* ---- standby: panel + backlight off when the PC is gone ------------------
+ * USB 5 V usually stays on after the PC shuts down (and always while it sleeps),
+ * so without this the LCD would burn 24/7. After STANDBY_AFTER_MS of silence,
+ * or at once when hwmond says "SRC=CMD|STANDBY=1" on quit / OS shutdown, the
+ * backlight (~100 mA, the bulk of the board's draw) is cut, the ILI9341 goes to
+ * sleep (SLPIN) and the CPU drops to 80 MHz. The first byte of the next frame
+ * wakes everything and the page is redrawn before the backlight comes back. */
+#define STANDBY_AFTER_MS 60000UL
+static bool standby = false;
+
+static void enterStandby()
+{
+    standby = true;
+    digitalWrite(BACKLIGHT_PIN, LOW);
+    tft.writecommand(TFT_DISPOFF);
+    tft.writecommand(0x10);                                 // panel sleep: ~1 mA; needs 120 ms before SLPOUT
+    setCpuFrequencyMhz(80);                                 // USB-Serial/JTAG and UART keep running
+}
+
+static void leaveStandby(uint32_t now)
+{
+    standby = false;
+    setCpuFrequencyMhz(240);
+    tft.writecommand(0x11);          // SLPOUT
+    delay(120);                                             // ILI9341 datasheet: wait before DISPON
+    tft.writecommand(TFT_DISPON);
+    render(now);                                            // fresh page first...
+    digitalWrite(BACKLIGHT_PIN, HIGH);                      // ...then light it, no stale flash
+}
+
 void setup()
 {
     pinMode(BACKLIGHT_PIN, OUTPUT);
@@ -70,6 +100,14 @@ void loop()
     uint32_t now = millis();
     while (Serial.available())    redraw |= dc_feed(&state, Serial.read(), now);
     while (auxSerial.available()) redraw |= dc_feed(&state, auxSerial.read(), now);
+
+    bool wantStandby = dc_standby(&state, now, STANDBY_AFTER_MS);
+    if (wantStandby != standby) {
+        if (wantStandby) enterStandby(); else leaveStandby(now);
+        delay(5);
+        return;
+    }
+    if (standby) { delay(50); return; }                     // dark: just keep draining the serial ports
 
     static uint32_t lastTick = 0;
     static bool staleShown = false;

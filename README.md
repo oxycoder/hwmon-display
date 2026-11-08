@@ -48,6 +48,22 @@ SRC=OS|HOST=tt-desktop|CPU=...|THREADS=16|OS=Ubuntu 24.04|LOAD=37|TEMP=68|FAN=11
 Unknown keys are ignored; missing keys render as `--`. Anything not starting with `SRC=`
 (firmware console echo, noise) is dropped. After 5 s of silence the display shows a NO SIGNAL banner.
 
+**Standby.** USB 5 V usually stays on after the PC shuts down (and always while it sleeps), so the
+display puts itself to sleep instead of showing NO SIGNAL forever: after 60 s without a frame
+(`STANDBY_AFTER_MS` in the sketch) the backlight is cut, the ILI9341 enters sleep mode and the ESP32
+drops to 80 MHz. The next data frame, from `hwmon.efi` at boot or from `hwmond` after resume, wakes it
+and the page is redrawn before the backlight comes back. `hwmond` also sends one control frame,
+
+```
+SRC=CMD|STANDBY=1
+```
+
+when it quits (tray *Quit*, Ctrl-C, SIGTERM), when the OS shuts down or logs off (Windows:
+`WM_ENDSESSION` on the tray window / console control events) and when the PC goes to sleep
+(Windows: `WM_POWERBROADCAST` / `PBT_APMSUSPEND`; Linux: logind `PrepareForSleep` on the system
+bus), so the screen goes dark at once instead of a minute later. On resume the next frame wakes it. `SRC=CMD` frames never replace the data on screen; the last readings
+come back on wake.
+
 `CPU_W` / `GPU_W` are the CPU package and GPU board power in watts. The OS page shows them
 as a third column next to temperature and load, and the footer shows their sum (`PWR 298W`)
 next to the CPU fan. Linux: CPU power from the RAPL energy counters under
@@ -133,7 +149,7 @@ settings; the app already asks the firmware to connect all controllers and retri
 
    **Tray icon (both)**: `hwmond -tray` adds an icon whose tooltip shows the state (*display on COM3*,
    *waiting for a USB display...*, *display disconnected, searching...*); its menu has a
-   *Start on login* checkbox (same as `-autostart`) and *Quit*.
+   *Start on login* checkbox (same as `-autostart`) and *Quit* (which also parks the display in standby).
 5. **ESP32**: Arduino IDE → ESP32 Dev Module, TFT_eSPI with `User_Setup_CYD.h`, flash `esp32_cyd.ino`.
 
 ## Notes / gotchas learned
