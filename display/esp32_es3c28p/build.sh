@@ -29,14 +29,20 @@ case "${1:-build}" in
     arduino-cli lib install "TFT_eSPI"
     echo "setup done";;
   build)
+    # display_core.{c,h} are symlinks into ../core. On a Windows checkout without
+    # symlink support git writes them as one-line text files, so stage a copy of
+    # the sketch with the real files instead of compiling in place.
+    SKETCH=build/sketch/esp32_es3c28p
+    rm -rf "$SKETCH"; mkdir -p "$SKETCH"
+    cp esp32_es3c28p.ino ../core/display_core.c ../core/display_core.h "$SKETCH/"
     arduino-cli compile --fqbn "$FQBN" \
       --build-property "compiler.cpp.extra_flags=$TFT_FLAGS" \
       --build-property "compiler.c.extra_flags=$TFT_FLAGS" \
-      --output-dir build .
+      --output-dir build "$SKETCH"
     ls -la build/*.bin;;
   flash)
-    PORT=${2:?usage: ./build.sh flash /dev/cu.usbmodemXXXX}
-    arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir build .
+    PORT=${2:?usage: ./build.sh flash /dev/cu.usbmodemXXXX   (Windows: COM3)}
+    arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir build build/sketch/esp32_es3c28p
     echo "flashed; the board re-enumerates in ~2 s";;
   test)
     PORT=${2:?usage: ./build.sh test /dev/cu.usbmodemXXXX}
@@ -47,7 +53,7 @@ case "${1:-build}" in
     sleep 1
     echo 'SRC=UEFI|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|RAM_MB=32768|BOARD=ASUS PRIME B650-PLUS|BIOS=American Megatrends 3024|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125|STORAGE_CTRL=2' >&3
     echo "sent BOOT frame (screen should show the boot page now)"; sleep 3
-    echo 'SRC=OS|HOST=tt-desktop|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|OS=Ubuntu 24.04.5 LTS|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900' >&3
+    echo 'SRC=OS|HOST=tt-desktop|CPU=AMD Ryzen 7 7800X3D 8-Core Processor|THREADS=16|OS=Ubuntu 24.04.5 LTS|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,/home:40:1863|DISK_T=38,35|GPU=AMD Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|VRAM_USED_MB=7500|VRAM_MB=24576' >&3
     echo "sent OS frame (screen should show the OS page now)"; sleep 3
     exec 3>&-
     echo "port closed; NO SIGNAL banner appears after 5 s of silence";;

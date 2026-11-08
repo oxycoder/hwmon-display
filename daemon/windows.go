@@ -59,6 +59,48 @@ func osName() string {
 	return strings.TrimSpace(name + " " + ver)
 }
 
+// findPorts lists COM ports of known display MCUs from the USB enum tree:
+// HKLM\SYSTEM\CurrentControlSet\Enum\USB\VID_303A&PID_1001&MI_00\<inst>\Device Parameters\PortName.
+// The registry remembers unplugged devices too, so callers must try to open each one.
+func findPorts() []string {
+	const usb = `SYSTEM\CurrentControlSet\Enum\USB`
+	var ports []string
+	for _, dev := range regSubkeys(usb) {
+		d := strings.ToUpper(dev)
+		if !strings.HasPrefix(d, "VID_") || len(d) < 17 || d[8:13] != "&PID_" {
+			continue
+		}
+		if !knownUSB(d[4:8], d[13:17]) {
+			continue
+		}
+		for _, inst := range regSubkeys(usb + `\` + dev) {
+			if p := regString(usb+`\`+dev+`\`+inst+`\Device Parameters`, "PortName", ""); strings.HasPrefix(p, "COM") {
+				ports = append(ports, p)
+			}
+		}
+	}
+	return ports
+}
+
+func regSubkeys(path string) []string {
+	var h syscall.Handle
+	p, _ := syscall.UTF16PtrFromString(path)
+	if syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, p, 0, syscall.KEY_READ, &h) != nil {
+		return nil
+	}
+	defer syscall.RegCloseKey(h)
+	var out []string
+	for i := uint32(0); ; i++ {
+		buf := make([]uint16, 256)
+		n := uint32(len(buf))
+		if syscall.RegEnumKeyEx(h, i, &buf[0], &n, nil, nil, nil, nil) != nil {
+			break
+		}
+		out = append(out, syscall.UTF16ToString(buf[:n]))
+	}
+	return out
+}
+
 func regString(path, name, def string) string {
 	p, _ := syscall.UTF16PtrFromString(path)
 	var h syscall.Handle
@@ -113,6 +155,34 @@ func memMB() (used, total int, ok bool) {
 
 func cpuTemp() int { return lhm().cpuTemp }
 func fanRPM() int  { return lhm().fan }
+
+// gpuInfo: "GPU=name|GPU_TEMP=61|GPU_LOAD=37|VRAM_USED_MB=7500|VRAM_MB=16384"
+// from LibreHardwareMonitor; "" when no GPU node is present.
+func gpuInfo() string {
+	r := lhm()
+	if r.gpuName == "" {
+		return ""
+	}
+	parts := []string{"GPU=" + clean(shortGPUName(r.gpuName))}
+	if r.gpuTemp >= 0 {
+		parts = append(parts, "GPU_TEMP="+strconv.Itoa(r.gpuTemp))
+	}
+	if r.gpuLoad >= 0 {
+		parts = append(parts, "GPU_LOAD="+strconv.Itoa(r.gpuLoad))
+	}
+	if r.gpuMemUsed >= 0 && r.gpuMemTotal > 0 {
+		parts = append(parts, "VRAM_USED_MB="+strconv.Itoa(r.gpuMemUsed), "VRAM_MB="+strconv.Itoa(r.gpuMemTotal))
+	}
+	return strings.Join(parts, "|")
+}
+
+// shortGPUName drops vendor boilerplate so the name fits one LCD line.
+func shortGPUName(n string) string {
+	for _, cut := range []string{"NVIDIA ", "AMD ", "Intel(R) ", "Intel ", "(R)", "(TM)", " Graphics Family"} {
+		n = strings.ReplaceAll(n, cut, "")
+	}
+	return strings.Join(strings.Fields(n), " ")
+}
 
 // disks: "C:62:931,D:40:1863" = letter : used% : total GB, fixed drives only.
 func disks() string {

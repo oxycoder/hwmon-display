@@ -23,37 +23,75 @@ import (
 )
 
 func main() {
-	port := flag.String("port", defaultPort, "serial device (COM5, /dev/ttyACM0...), or - for stdout")
+	port := flag.String("port", "auto", "serial device (COM5, /dev/ttyACM0...), - for stdout, or auto (find the USB display)")
 	interval := flag.Duration("interval", time.Second, "send interval")
 	once := flag.Bool("once", false, "send one frame and exit")
 	flag.Parse()
 
-	var w *os.File
-	if *port == "-" {
-		w = os.Stdout
-	} else {
-		f, err := openSerial(*port)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "open serial:", err)
-			os.Exit(1)
-		}
-		defer f.Close()
-		w = f
-	}
-
 	cpu := newCPULoad()
 	static := staticInfo()
 	for {
-		line := static + "|" + dynamicInfo(cpu) + "\n"
-		if _, err := w.WriteString(line); err != nil {
-			fmt.Fprintln(os.Stderr, "write:", err)
+		w := connect(*port, *once)
+		for {
+			line := static + "|" + dynamicInfo(cpu) + "\n"
+			if _, err := w.WriteString(line); err != nil {
+				fmt.Fprintln(os.Stderr, "write:", err)
+				if *once || w == os.Stdout {
+					os.Exit(1)
+				}
+				w.Close() // display unplugged / re-enumerated: go back to detection
+				break
+			}
+			if *once {
+				return
+			}
+			time.Sleep(*interval)
+		}
+	}
+}
+
+// connect opens the requested port, or with "auto" searches for a USB display
+// (ESP32-S3 303a:1001, Espressif TinyUSB 303a:4001, RP2040 2e8a:000a) and keeps
+// retrying until one appears. Exits on failure only in -once mode.
+func connect(port string, once bool) *os.File {
+	if port == "-" {
+		return os.Stdout
+	}
+	for attempt := 0; ; attempt++ {
+		cands := []string{port}
+		if port == "auto" {
+			cands = findPorts()
+		}
+		for _, c := range cands {
+			f, err := openSerial(c)
+			if err == nil {
+				fmt.Fprintln(os.Stderr, "display on", c)
+				return f
+			}
+			fmt.Fprintln(os.Stderr, "open serial:", err)
+		}
+		if once {
+			fmt.Fprintln(os.Stderr, "no display found")
 			os.Exit(1)
 		}
-		if *once {
-			return
+		if attempt == 0 {
+			fmt.Fprintln(os.Stderr, "waiting for a USB display...")
 		}
-		time.Sleep(*interval)
+		time.Sleep(2 * time.Second)
 	}
+}
+
+// usbIDs lists VID:PID pairs (lower-case hex) that are known display MCUs.
+var usbIDs = []string{"303a:1001", "303a:4001", "2e8a:000a"}
+
+func knownUSB(vid, pid string) bool {
+	id := strings.ToLower(vid) + ":" + strings.ToLower(pid)
+	for _, k := range usbIDs {
+		if id == k {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- static (read once) --------------------------------------------
@@ -86,6 +124,9 @@ func dynamicInfo(c *cpuLoad) string {
 	}
 	if t := diskTemps(); t != "" {
 		parts = append(parts, "DISK_T="+t)
+	}
+	if g := gpuInfo(); g != "" {
+		parts = append(parts, g)
 	}
 	return strings.Join(parts, "|")
 }

@@ -113,6 +113,38 @@ func cpuTemp() int {
 	return best
 }
 
+// gpuInfo: GPU name/temp/load/VRAM via sysfs (amdgpu). Nvidia needs nvidia-smi; not wired yet.
+func gpuInfo() string {
+	dirs, _ := filepath.Glob("/sys/class/drm/card[0-9]/device")
+	for _, d := range dirs {
+		if readTrim(d+"/vendor") != "0x1002" {
+			continue
+		}
+		parts := []string{"GPU=" + clean(amdGPUName(d))}
+		if hw, _ := filepath.Glob(d + "/hwmon/hwmon*"); len(hw) > 0 {
+			if t := readInt(hw[0] + "/temp1_input"); t > 0 {
+				parts = append(parts, "GPU_TEMP="+strconv.Itoa(t/1000))
+			}
+		}
+		if v := readTrim(d + "/gpu_busy_percent"); v != "" {
+			parts = append(parts, "GPU_LOAD="+v)
+		}
+		used, total := readInt(d+"/mem_info_vram_used"), readInt(d+"/mem_info_vram_total")
+		if total > 0 {
+			parts = append(parts, "VRAM_USED_MB="+strconv.Itoa(used>>20), "VRAM_MB="+strconv.Itoa(total>>20))
+		}
+		return strings.Join(parts, "|")
+	}
+	return ""
+}
+
+func amdGPUName(dev string) string {
+	if n := readTrim(dev + "/product_name"); n != "" {
+		return n
+	}
+	return "AMD GPU " + strings.TrimPrefix(readTrim(dev+"/device"), "0x")
+}
+
 // fanRPM returns the first non-zero fan reading (typically CPU fan), or 0.
 func fanRPM() int {
 	fans, _ := filepath.Glob("/sys/class/hwmon/hwmon*/fan*_input")
@@ -174,6 +206,28 @@ func (c *cpuLoad) percent() int {
 }
 
 // ---------- serial port: 115200 8N1 raw, via termios ioctl (no cgo) ----------
+
+// findPorts lists /dev/tty* nodes whose USB parent is a known display MCU:
+// /sys/class/tty/ttyACM0/device -> the CDC interface; its parent holds idVendor/idProduct.
+func findPorts() []string {
+	var ports []string
+	ttys, _ := filepath.Glob("/sys/class/tty/tty*/device")
+	for _, dev := range ttys {
+		real, err := filepath.EvalSymlinks(dev) // .../usb1/1-3/1-3:1.0 (interface)
+		if err != nil {
+			continue
+		}
+		for up, i := filepath.Dir(real), 0; i < 4 && up != "/"; up, i = filepath.Dir(up), i+1 {
+			if vid := readTrim(up + "/idVendor"); vid != "" {
+				if knownUSB(vid, readTrim(up+"/idProduct")) {
+					ports = append(ports, "/dev/"+filepath.Base(filepath.Dir(dev)))
+				}
+				break
+			}
+		}
+	}
+	return ports
+}
 
 func openSerial(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOCTTY, 0)

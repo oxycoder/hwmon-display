@@ -6,3 +6,4 @@ uefi/esp/
 daemon/hwmond
 display/sim/sim
 daemon/hwmond.exe
+display/esp32_es3c28p/build/

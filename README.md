@@ -42,7 +42,7 @@ One line per frame, `\n`-terminated, must start with `SRC=`:
 
 ```
 SRC=UEFI|CPU=...|THREADS=16|RAM_MB=32768|BOARD=...|BIOS=...|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125|STORAGE_CTRL=2
-SRC=OS|HOST=tt-desktop|CPU=...|THREADS=16|OS=Ubuntu 24.04|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900
+SRC=OS|HOST=tt-desktop|CPU=...|THREADS=16|OS=Ubuntu 24.04|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,/home:40:1863|DISK_T=38,35|GPU=Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|VRAM_USED_MB=7500|VRAM_MB=24576
 ```
 
 Unknown keys are ignored; missing keys render as `--`. Anything not starting with `SRC=`
@@ -64,13 +64,13 @@ To try the display firmware on a *real* CYD before wiring the PC: flash the sket
 
 **USB-C build (ES3C28P / ESP32-S3):**
 ```
-brew install arduino-cli
+brew install arduino-cli                                   # Windows: winget install ArduinoSA.CLI, then run build.sh from Git Bash with COM3 as the port
 display/esp32_es3c28p/build.sh setup                       # once
 display/esp32_es3c28p/build.sh && display/esp32_es3c28p/build.sh flash /dev/cu.usbmodemXXXX
 display/esp32_es3c28p/build.sh test /dev/cu.usbmodemXXXX   # boot frame + OS frame on the LCD
 ```
 Then plug the board into any USB port of the PC — that's the wiring.
-Daemon: `hwmond -port /dev/ttyACM0`. Verify the board's USB-C is the MCU's *native* USB
+Daemon: just `hwmond` — it finds the display by USB ID (303a:1001 ESP32-S3, 303a:4001, 2e8a:000a Pico), waits for it to appear, and reconnects after a re-plug; `-port` only overrides this. Verify the board's USB-C is the MCU's *native* USB
 (`lsusb` shows `303a:` Espressif or `2e8a:` Raspberry Pi), not a CH340 (`1a86:`) — a CH340 only
 does power + flashing, so use the COM build below with it.
 If the firmware doesn't enumerate USB before boot, check for "Fast Boot" / "USB legacy" BIOS
@@ -87,12 +87,12 @@ settings; the app already asks the firmware to connect all controllers and retri
    (the `-u` string is the loader it chainloads; Windows: `\EFI\Microsoft\Boot\bootmgfw.efi`).
    Secure Boot: sign with `sbctl sign uefi/hwmon.efi` or disable.
 4. **Daemon (Linux)**: `go build -o /usr/local/bin/hwmond ./daemon` + a systemd unit running
-   `hwmond -port /dev/ttyACM0` (or `/dev/ttyS0` for the COM build).
+   `hwmond` (USB display, auto-detected) or `hwmond -port /dev/ttyS0` for the COM build.
 
-   **Daemon (Windows)**: `GOOS=windows go build -o hwmond.exe ./daemon`, then `hwmond.exe -port COM5`.
+   **Daemon (Windows)**: `GOOS=windows go build -o hwmond.exe ./daemon`, then `hwmond.exe` (USB display auto-detected; `-port COM5` for the COM build).
    For temperatures and fan speed, run LibreHardwareMonitor with *Options → Remote Web Server → Run*
    (port 8085; override with `HWMON_LHM_URL`). Autostart: Task Scheduler, "At log on", run
-   `hwmond.exe -port COM5` hidden. Find the port in Device Manager → Ports (USB Serial Device).
+   `hwmond.exe` hidden. For the COM build find the port in Device Manager → Ports (USB Serial Device).
 5. **ESP32**: Arduino IDE → ESP32 Dev Module, TFT_eSPI with `User_Setup_CYD.h`, flash `esp32_cyd.ino`.
 
 ## Notes / gotchas learned

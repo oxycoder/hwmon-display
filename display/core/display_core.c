@@ -136,50 +136,104 @@ static void render_boot(const dc_state *s, const dc_gfx *g)
     g->draw_text(8, DC_H - 11, "waiting for OS...", C_DIM, C_PANEL, 1);
 }
 
+/* Remove every occurrence of `sub` from `s` in place. */
+static void strip_sub(char *s, const char *sub)
+{
+    size_t n = strlen(sub);
+    char *p;
+    while ((p = strstr(s, sub)) != NULL) memmove(p, p + n, strlen(p + n) + 1);
+}
+
+/* "AMD Ryzen 9 3900X 12-Core Processor" -> "Ryzen 9 3900X",
+   "Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz" -> "Core i7-9700K",
+   "NVIDIA GeForce RTX 4070" -> "GeForce RTX 4070". */
+static void short_chip(char *dst, int dstsz, const char *src)
+{
+    snprintf(dst, dstsz, "%s", src);
+    const char *junk[] = { "AMD ", "Intel(R) ", "Intel ", "NVIDIA ", "(R)", "(TM)", " Processor", " CPU", " Graphics Family" };
+    for (unsigned i = 0; i < sizeof junk / sizeof junk[0]; i++) strip_sub(dst, junk[i]);
+    char *p = strstr(dst, "-Core");                 /* " 12-Core" */
+    if (p) {
+        char *q = p;
+        while (q > dst && q[-1] != ' ') q--;
+        if (q > dst) q--;
+        memmove(q, p + 5, strlen(p + 5) + 1);
+    }
+    if ((p = strstr(dst, " @")) != NULL) *p = 0;    /* " @ 3.60GHz" */
+    char *w = dst;                                  /* collapse runs of spaces, trim */
+    for (char *r = dst; *r; r++) if (!(*r == ' ' && (w == dst || w[-1] == ' '))) *w++ = *r;
+    while (w > dst && w[-1] == ' ') w--;
+    *w = 0;
+}
+
+/* One "big number" cell: small label, large value, small unit after it. */
+static void cell(const dc_gfx *g, int x, int y, const char *label, const char *val, dc_color c, int sz, const char *unit)
+{
+    text(g, x, y, label, C_DIM, 1);
+    text(g, x, y + 12 + (4 - sz) * 4, val, c, sz);                   /* 32px (sz 4) / 24px (sz 3) digits */
+    text(g, x + (int)strlen(val) * 6 * sz + 2, y + 36, unit, C_DIM, 1); /* unit sits on the baseline */
+}
+
+static void temp_val(char *out, int sz, int t)   { if (t >= 0) snprintf(out, sz, "%d", t); else snprintf(out, sz, "--"); }
+static dc_color load_color(int l) { return l < 0 ? C_DIM : l < 70 ? C_OK : l < 90 ? C_WARN : C_HOT; }
+
+/* Memory cell: "14.4" big + "/32GB" small; colour by fill percentage. */
+static void mem_cell(const dc_gfx *g, int x, int y, const char *label, int used_mb, int total_mb)
+{
+    char val[16], unit[16];
+    dc_color c = C_DIM;
+    if (used_mb >= 0 && total_mb > 0) {
+        snprintf(val, sizeof val, "%.1f", used_mb / 1024.0);
+        snprintf(unit, sizeof unit, "/%dGB", (total_mb + 512) / 1024);
+        int pct = used_mb * 100 / total_mb;
+        c = pct < 70 ? C_ACCENT : pct < 90 ? C_WARN : C_HOT;
+    } else {
+        snprintf(val, sizeof val, "--");
+        unit[0] = 0;
+    }
+    cell(g, x, y, label, val, c, 3, unit);
+}
+
 static void render_os(const dc_state *s, const dc_gfx *g)
 {
-    char buf[80];
+    char buf[80], v[16];
     int load = ival(s, "LOAD", -1), temp = ival(s, "TEMP", -1), fan = ival(s, "FAN", -1);
     int used = ival(s, "RAM_USED_MB", -1), total = ival(s, "RAM_MB", -1);
+    int gload = ival(s, "GPU_LOAD", -1), gtemp = ival(s, "GPU_TEMP", -1);
+    int vused = ival(s, "VRAM_USED_MB", -1), vtotal = ival(s, "VRAM_MB", -1);
 
-    /* header */
-    fit(buf, sizeof buf, dc_get(s, "HOST"), 20);
-    text(g, 8, 6, buf, C_ACCENT, 2);
-    fit(buf, sizeof buf, dc_get(s, "CPU"), 50);
-    text(g, 8, 24, buf, C_DIM, 1);
-    g->fill_rect(0, 36, DC_W, 1, C_PANEL);
-
-    /* big numbers: temp / load / cpu fan */
-    int col = DC_W / 3;
-    const char *hdr[3] = { "CPU TEMP", "CPU LOAD", "CPU FAN" };
-    char vals[3][16]; dc_color cols[3];
-    if (temp >= 0) snprintf(vals[0], 16, "%d", temp); else snprintf(vals[0], 16, "--");
-    if (load >= 0) snprintf(vals[1], 16, "%d", load); else snprintf(vals[1], 16, "--");
-    if (fan > 0)   snprintf(vals[2], 16, "%d", fan);  else snprintf(vals[2], 16, "--");
-    cols[0] = temp_color(temp);
-    cols[1] = load < 0 ? C_DIM : load < 70 ? C_OK : load < 90 ? C_WARN : C_HOT;
-    cols[2] = fan > 0 ? C_TEXT : C_DIM;
-    const char *unit[3] = { "C", "%", "rpm" };
-    for (int i = 0; i < 3; i++) {
-        int x = 8 + i * col;
-        int sz = i == 2 ? 3 : 4;                                 /* fan has 4 digits: a bit smaller */
-        text(g, x, 48, hdr[i], C_DIM, 1);
-        text(g, x, 62 + (4 - sz) * 4, vals[i], cols[i], sz);     /* 32px / 24px tall digits */
-        text(g, x + (int)strlen(vals[i]) * 6 * sz + 2, 84, unit[i], C_DIM, 1);
+    /* header: "<CPU> - <GPU>" on one line (52 chars max at 6px/char) */
+    char cpu[64], gpu[64];
+    short_chip(cpu, sizeof cpu, dc_get(s, "CPU"));
+    short_chip(gpu, sizeof gpu, dc_get(s, "GPU"));
+    int x = 8;
+    if (*gpu) {
+        fit(buf, sizeof buf, cpu, 24);
+        text(g, x, 6, buf, C_ACCENT, 1); x += (int)strlen(buf) * 6;
+        text(g, x, 6, " - ", C_DIM, 1);   x += 18;
+        fit(buf, sizeof buf, gpu, (DC_W - 8 - x) / 6);
+        text(g, x, 6, buf, C_TEXT, 1);
+    } else {
+        fit(buf, sizeof buf, cpu, 50);
+        text(g, x, 6, buf, C_ACCENT, 1);
     }
+    g->fill_rect(0, 18, DC_W, 1, C_PANEL);
 
-    /* RAM */
-    int y = 106;
-    text(g, 8, y, "RAM", C_DIM, 1);
-    int rpct = (used >= 0 && total > 0) ? used * 100 / total : 0;
-    bar(g, 56, y, 150, 8, rpct, C_ACCENT);
-    if (total > 0) {
-        snprintf(buf, sizeof buf, "%.1f / %.1f GB", used / 1024.0, total / 1024.0);
-        text(g, 214, y, buf, C_DIM, 1);
-    }
+    /* row 1: CPU temp / CPU load / RAM used;  row 2: GPU temp / GPU load / VRAM used */
+    const int cx[3] = { 8, 104, 200 };
+    int y = 26;
+    temp_val(v, sizeof v, temp);  cell(g, cx[0], y, "CPU TEMP", v, temp_color(temp), 4, "C");
+    temp_val(v, sizeof v, load);  cell(g, cx[1], y, "CPU LOAD", v, load_color(load), 4, "%");
+    mem_cell(g, cx[2], y, "RAM USED", used, total);
+    y += 54;
+    temp_val(v, sizeof v, gtemp); cell(g, cx[0], y, "GPU TEMP", v, temp_color(gtemp), 4, "C");
+    temp_val(v, sizeof v, gload); cell(g, cx[1], y, "GPU LOAD", v, load_color(gload), 4, "%");
+    mem_cell(g, cx[2], y, "VRAM USED", vused, vtotal);
+    y += 54;
+    g->fill_rect(0, y - 2, DC_W, 1, C_PANEL);
 
     /* DISKS: "C:62:931,D:40:1863" = name : used% : total GB; temps in DISK_T="38,35" */
-    y += 20;
+    y += 4;
     const char *dk = dc_get(s, "DISK");
     const char *dt = dc_get(s, "DISK_T");
     if (*dk) {
@@ -211,10 +265,14 @@ static void render_os(const dc_state *s, const dc_gfx *g)
         }
     }
 
-    /* footer */
+    /* footer: OS name | CPU fan | frame counter */
     g->fill_rect(0, DC_H - 14, DC_W, 14, C_PANEL);
-    fit(buf, sizeof buf, dc_get(s, "OS"), 34);
+    fit(buf, sizeof buf, dc_get(s, "OS"), 30);
     g->draw_text(8, DC_H - 11, buf, C_DIM, C_PANEL, 1);
+    if (fan > 0) {
+        snprintf(buf, sizeof buf, "FAN %drpm", fan);
+        g->draw_text(200, DC_H - 11, buf, C_DIM, C_PANEL, 1);
+    }
     snprintf(buf, sizeof buf, "#%lu", (unsigned long)s->frames);
     g->draw_text(DC_W - 8 - (int)strlen(buf) * 6, DC_H - 11, buf, C_DIM, C_PANEL, 1);
 }
