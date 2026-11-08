@@ -6,7 +6,7 @@
 //
 //	hwmond -port /dev/ttyACM0          # Linux, USB display
 //	hwmond -port /dev/ttyS0            # Linux, COM1
-//	hwmond -port COM5                  # Windows (temps/fans via LibreHardwareMonitor's web server)
+//	hwmond -port COM5                  # Windows (WMI/driver libraries; run elevated on ASUS boards for CPU temp + fan)
 //	hwmond -port - -once               # print one line to stdout
 //	hwmond -tray                       # also show a tray icon (status, start-on-login toggle, quit)
 //	hwmond -autostart on               # start at login with the current flags (+ -tray); "off" removes it
@@ -31,7 +31,7 @@ func main() {
 	port := flag.String("port", "auto", "serial device (COM5, /dev/ttyACM0...), - for stdout, or auto (find the USB display)")
 	interval := flag.Duration("interval", time.Second, "send interval")
 	once := flag.Bool("once", false, "send one frame and exit")
-	tray := flag.Bool("tray", false, "show a system tray icon (status, start-on-login toggle, quit)")
+	tray := flag.Bool("tray", true, "show a system tray icon (status, start-on-login toggle, quit)")
 	autostart := flag.String("autostart", "", "on|off: register/unregister hwmond to start at login (with the current -port/-interval and -tray), then exit")
 	flag.Parse()
 

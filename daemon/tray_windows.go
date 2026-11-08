@@ -245,9 +245,26 @@ func trayQuit(hwnd uintptr) {
 	os.Exit(0)
 }
 
-// makeIcon draws a 32x32 icon in memory: a rounded frame with three meter
-// bars (green / amber / cyan). Falls back to the stock application icon.
+var (
+	procLoadImage        = user32.NewProc("LoadImageW")
+	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
+)
+
+// makeIcon loads the application icon embedded by rsrc_windows_*.syso (group
+// icon id 1, see icon/gen.go) at the tray's small-icon size. Without the
+// resource it draws the same motif in memory: a rounded frame with three
+// meter bars (green / amber / cyan); last resort is the stock application icon.
 func makeIcon(hinst uintptr) uintptr {
+	const smCxSmIcon, smCySmIcon, imageIcon = 49, 50, 1
+	cx, _, _ := procGetSystemMetrics.Call(smCxSmIcon)
+	cy, _, _ := procGetSystemMetrics.Call(smCySmIcon)
+	if h, _, _ := procLoadImage.Call(hinst, 1, imageIcon, cx, cy, 0); h != 0 {
+		return h
+	}
+	return drawIcon(hinst)
+}
+
+func drawIcon(hinst uintptr) uintptr {
 	const n = 32
 	xor := make([]byte, n*n*4) // BGRA
 	and := make([]byte, n*n/8) // 1bpp mask, all opaque (alpha from BGRA wins)

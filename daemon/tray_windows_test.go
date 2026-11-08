@@ -79,3 +79,14 @@ func runValueString() string {
 	syscall.RegQueryValueEx(h, name, nil, &typ, (*byte)(unsafe.Pointer(&buf[0])), &size)
 	return strings.TrimRight(syscall.UTF16ToString(buf), "\x00")
 }
+
+// TestEmbeddedIcon checks that rsrc_windows_*.syso (icon/gen.go) linked an
+// icon group with id 1 that LoadImage can resolve at tray and large sizes.
+func TestEmbeddedIcon(t *testing.T) {
+	hinst, _, _ := procGetModuleHandle.Call(0)
+	for _, sz := range []uintptr{16, 32, 48, 256} {
+		if h, _, _ := procLoadImage.Call(hinst, 1, 1 /*IMAGE_ICON*/, sz, sz, 0); h == 0 {
+			t.Errorf("LoadImage(icon 1, %dpx) failed: resource not linked?", sz)
+		}
+	}
+}

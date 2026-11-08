@@ -3,23 +3,15 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
 const defaultPort = "COM5"
-
-// Temperatures and fan speeds are not readable on Windows without a kernel
-// driver, so they come from LibreHardwareMonitor: Options → Remote Web Server
-// → Run (default port 8085). Without it, TEMP/FAN render as "--".
-var lhmURL = envOr("HWMON_LHM_URL", "http://localhost:8085/data.json")
 
 func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
@@ -29,16 +21,16 @@ func envOr(k, d string) string {
 }
 
 var (
-	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
-	procGetSystemTimes       = kernel32.NewProc("GetSystemTimes")
-	procGlobalMemoryStatx    = kernel32.NewProc("GlobalMemoryStatusEx")
-	procSetCommState         = kernel32.NewProc("SetCommState")
-	procGetCommState         = kernel32.NewProc("GetCommState")
-	procSetCommTimeouts      = kernel32.NewProc("SetCommTimeouts")
-	procEscapeCommFunc       = kernel32.NewProc("EscapeCommFunction")
-	procGetLogicalDrives     = kernel32.NewProc("GetLogicalDrives")
-	procGetDriveType         = kernel32.NewProc("GetDriveTypeW")
-	procGetDiskFreeSpaceEx   = kernel32.NewProc("GetDiskFreeSpaceExW")
+	kernel32               = syscall.NewLazyDLL("kernel32.dll")
+	procGetSystemTimes     = kernel32.NewProc("GetSystemTimes")
+	procGlobalMemoryStatx  = kernel32.NewProc("GlobalMemoryStatusEx")
+	procSetCommState       = kernel32.NewProc("SetCommState")
+	procGetCommState       = kernel32.NewProc("GetCommState")
+	procSetCommTimeouts    = kernel32.NewProc("SetCommTimeouts")
+	procEscapeCommFunc     = kernel32.NewProc("EscapeCommFunction")
+	procGetLogicalDrives   = kernel32.NewProc("GetLogicalDrives")
+	procGetDriveType       = kernel32.NewProc("GetDriveTypeW")
+	procGetDiskFreeSpaceEx = kernel32.NewProc("GetDiskFreeSpaceExW")
 )
 
 // ---------- static -----------------------------------------------------------
@@ -153,37 +145,6 @@ func memMB() (used, total int, ok bool) {
 	return mb(m.TotalPhys - m.AvailPhys), mb(m.TotalPhys), true
 }
 
-func cpuTemp() int { return lhm().cpuTemp }
-func fanRPM() int  { return lhm().fan }
-
-// gpuInfo: "GPU=name|GPU_TEMP=61|GPU_LOAD=37|VRAM_USED_MB=7500|VRAM_MB=16384"
-// from LibreHardwareMonitor; "" when no GPU node is present.
-func gpuInfo() string {
-	r := lhm()
-	if r.gpuName == "" {
-		return ""
-	}
-	parts := []string{"GPU=" + clean(shortGPUName(r.gpuName))}
-	if r.gpuTemp >= 0 {
-		parts = append(parts, "GPU_TEMP="+strconv.Itoa(r.gpuTemp))
-	}
-	if r.gpuLoad >= 0 {
-		parts = append(parts, "GPU_LOAD="+strconv.Itoa(r.gpuLoad))
-	}
-	if r.gpuMemUsed >= 0 && r.gpuMemTotal > 0 {
-		parts = append(parts, "VRAM_USED_MB="+strconv.Itoa(r.gpuMemUsed), "VRAM_MB="+strconv.Itoa(r.gpuMemTotal))
-	}
-	return strings.Join(parts, "|")
-}
-
-// shortGPUName drops vendor boilerplate so the name fits one LCD line.
-func shortGPUName(n string) string {
-	for _, cut := range []string{"NVIDIA ", "AMD ", "Intel(R) ", "Intel ", "(R)", "(TM)", " Graphics Family"} {
-		n = strings.ReplaceAll(n, cut, "")
-	}
-	return strings.Join(strings.Fields(n), " ")
-}
-
 // disks: "C:62:931,D:40:1863,E:5:64" = letter : used% : total GB for fixed and
 // removable (USB stick / external HDD) drives with media present. Empty card
 // readers fail GetDiskFreeSpaceEx and are skipped; network drives are ignored.
@@ -210,276 +171,6 @@ func disks() string {
 		}
 	}
 	return d.String()
-}
-
-func diskTemps() string {
-	var ss []string
-	for _, t := range lhm().diskTemps {
-		ss = append(ss, strconv.Itoa(t))
-	}
-	return strings.Join(ss, ",")
-}
-
-// ---------- LibreHardwareMonitor JSON ------------------------------------------
-
-type lhmNode struct {
-	Text     string    `json:"Text"`
-	Value    string    `json:"Value"`
-	ImageURL string    `json:"ImageURL"`
-	HardwareId string  `json:"HardwareId"`
-	Children []lhmNode `json:"Children"`
-}
-
-type lhmReading struct {
-	cpuTemp, fan int
-	diskTemps    []int
-	gpuName      string
-	gpuTemp      int
-	gpuLoad      int
-	gpuMemUsed   int
-	gpuMemTotal  int
-	at           time.Time
-}
-
-var lhmCache lhmReading
-var lhmClient = &http.Client{Timeout: 800 * time.Millisecond}
-
-// lhm fetches at most once per tick; returns -1/0 when LHM isn't running.
-func lhm() lhmReading {
-	if time.Since(lhmCache.at) < 900*time.Millisecond {
-		return lhmCache
-	}
-	r := lhmReading{cpuTemp: -1, fan: 0, at: time.Now()}
-	resp, err := lhmClient.Get(lhmURL)
-	if err == nil {
-		defer resp.Body.Close()
-		var root lhmNode
-		if json.NewDecoder(resp.Body).Decode(&root) == nil {
-			r.cpuTemp = findCPUTemp(&root)
-			r.fan = findFan(&root)
-			findDiskTemps(&root, &r.diskTemps)
-			findGPU(&root, &r)
-		}
-	}
-	lhmCache = r
-	return r
-}
-
-func numOf(v string) int { // "45.3 °C" / "1,180 RPM" -> 45 / 1180
-	f := strings.Fields(strings.ReplaceAll(v, ",", ""))
-	if len(f) == 0 {
-		return -1
-	}
-	x, err := strconv.ParseFloat(f[0], 64)
-	if err != nil {
-		return -1
-	}
-	return int(x + 0.5)
-}
-
-// cpuNodes collects every hardware node with the CPU icon, skipping LHM's
-// "Virtual" pseudo-devices, with the one matching the registry CPU name first.
-func cpuNodes(n *lhmNode, out *[]*lhmNode) {
-	if strings.Contains(n.ImageURL, "cpu.png") && !strings.Contains(strings.ToLower(n.Text), "virtual") {
-		*out = append(*out, n)
-	}
-	for i := range n.Children {
-		cpuNodes(&n.Children[i], out)
-	}
-}
-
-func findCPUTemp(root *lhmNode) int {
-	// 1. Prioritize motherboard Super I/O / LPC sensor named "CPU" (e.g. 44°C)
-	if v := findSuperIOCPUTemp(root); v >= 0 {
-		return v
-	}
-
-	// 2. Fallback to CPU package sensors
-	var nodes []*lhmNode
-	cpuNodes(root, &nodes)
-	model := strings.ToLower(cpuModel())
-	for pass := 0; pass < 2; pass++ {
-		for _, n := range nodes {
-			name := strings.ToLower(n.Text)
-			if pass == 0 && !(strings.Contains(model, name) || strings.Contains(name, firstWords(model, 3))) {
-				continue
-			}
-			if v := tempOf(n, []string{"Package", "Tctl", "Tdie", "CPU Core", "Core Average"}); v >= 0 {
-				return v
-			}
-		}
-	}
-	return -1
-}
-
-func findSuperIOCPUTemp(n *lhmNode) int {
-	if strings.Contains(n.HardwareId, "/lpc") {
-		for i := range n.Children {
-			if n.Children[i].Text == "Temperatures" {
-				for _, s := range n.Children[i].Children {
-					if s.Text == "CPU" {
-						return numOf(s.Value)
-					}
-				}
-			}
-		}
-	}
-	for i := range n.Children {
-		if v := findSuperIOCPUTemp(&n.Children[i]); v >= 0 {
-			return v
-		}
-	}
-	return -1
-}
-
-func firstWords(s string, n int) string {
-	f := strings.Fields(s)
-	if len(f) > n {
-		f = f[:n]
-	}
-	return strings.Join(f, " ")
-}
-
-// tempOf: the node's "Temperatures" group → first sensor matching prefs, else the max.
-func tempOf(n *lhmNode, prefs []string) int {
-	for i := range n.Children {
-		if n.Children[i].Text != "Temperatures" {
-			continue
-		}
-		best := -1
-		for _, s := range n.Children[i].Children {
-			v := numOf(s.Value)
-			for _, p := range prefs {
-				if strings.Contains(s.Text, p) {
-					return v
-				}
-			}
-			if v > best {
-				best = v
-			}
-		}
-		return best
-	}
-	return -1
-}
-
-// findFan: a fan labelled "CPU" if there is one, else the first spinning fan.
-func findFan(root *lhmNode) int {
-	var fans []lhmNode
-	collectFans(root, &fans)
-	for _, f := range fans {
-		if strings.Contains(strings.ToUpper(f.Text), "CPU") && numOf(f.Value) > 0 {
-			return numOf(f.Value)
-		}
-	}
-	for _, f := range fans {
-		if v := numOf(f.Value); v > 0 {
-			return v
-		}
-	}
-	return 0
-}
-
-func collectFans(n *lhmNode, out *[]lhmNode) {
-	if n.Text == "Fans" {
-		*out = append(*out, n.Children...)
-	}
-	for i := range n.Children {
-		collectFans(&n.Children[i], out)
-	}
-}
-
-// findDiskTemps: temperatures of storage devices (hdd icon), in tree order.
-func findDiskTemps(n *lhmNode, out *[]int) {
-	if strings.Contains(n.ImageURL, "hdd.png") {
-		if v := tempOf(n, []string{"Temperature"}); v >= 0 {
-			*out = append(*out, v)
-		}
-	}
-	for i := range n.Children {
-		findDiskTemps(&n.Children[i], out)
-	}
-}
-
-// ---------- GPU Parsing Support ----------------------------------------------
-
-func findGPU(root *lhmNode, out *lhmReading) {
-	var gpuNode *lhmNode
-	walkGPU(root, &gpuNode)
-	if gpuNode == nil {
-		return
-	}
-	out.gpuName = gpuNode.Text
-	out.gpuTemp = tempOf(gpuNode, []string{"GPU Core", "Core", "Hot Spot"})
-	out.gpuLoad = loadOf(gpuNode, []string{"GPU Core", "D3D 3D"})
-	out.gpuMemUsed, out.gpuMemTotal = gpuMemOf(gpuNode)
-}
-
-func walkGPU(n *lhmNode, found **lhmNode) {
-	if strings.HasPrefix(n.HardwareId, "/gpu") || strings.Contains(n.ImageURL, "ati.png") || strings.Contains(n.ImageURL, "nvidia.png") || strings.Contains(n.ImageURL, "intel.png") {
-		*found = n
-		return
-	}
-	for i := range n.Children {
-		walkGPU(&n.Children[i], found)
-		if *found != nil {
-			return
-		}
-	}
-}
-
-func loadOf(n *lhmNode, prefs []string) int {
-	for i := range n.Children {
-		if n.Children[i].Text == "Load" {
-			best := -1
-			for _, s := range n.Children[i].Children {
-				v := numOf(s.Value)
-				for _, p := range prefs {
-					if strings.Contains(s.Text, p) {
-						return v
-					}
-				}
-				if v > best {
-					best = v
-				}
-			}
-			return best
-		}
-	}
-	return -1
-}
-
-func gpuMemOf(n *lhmNode) (used, total int) {
-	used, total = -1, -1
-	for i := range n.Children {
-		if n.Children[i].Text == "Data" || n.Children[i].Text == "SmallData" {
-			for _, s := range n.Children[i].Children {
-				if strings.Contains(s.Text, "GPU Memory Used") || strings.Contains(s.Text, "Dedicated Memory Used") {
-					used = numMB(s.Value)
-				}
-				if strings.Contains(s.Text, "GPU Memory Total") || strings.Contains(s.Text, "Dedicated Memory Total") {
-					total = numMB(s.Value)
-				}
-			}
-		}
-	}
-	return
-}
-
-func numMB(v string) int {
-	f := strings.Fields(strings.ReplaceAll(v, ",", ""))
-	if len(f) < 2 {
-		return numOf(v)
-	}
-	val, err := strconv.ParseFloat(f[0], 64)
-	if err != nil {
-		return -1
-	}
-	unit := strings.ToUpper(f[1])
-	if strings.HasPrefix(unit, "GB") {
-		return int(val * 1024 + 0.5)
-	}
-	return int(val + 0.5)
 }
 
 // ---------- serial port -------------------------------------------------------

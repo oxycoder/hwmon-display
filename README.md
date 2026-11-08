@@ -29,7 +29,7 @@ binary covers both builds.
 |---|---|---|
 | `uefi/hwmon.c` | UEFI app (GNU-EFI, C). Reads CPUID, SMBIOS, memory map, PCI; writes to the 16550 directly and to USB-serial via `EFI_USB_IO_PROTOCOL`; chainloads the real bootloader. | **tested in QEMU/OVMF, serial + USB** |
 | `uefi/usbio.h` | `EFI_USB_IO_PROTOCOL` definition (gnu-efi doesn't ship one). | |
-| `daemon/` | OS daemon. `linux.go`: hwmon/procfs, every mounted block device from `/proc/mounts` (USB, NTFS Windows partitions). `windows.go`: kernel32 for load/RAM/drives (fixed + removable), LibreHardwareMonitor's web server for temp/fan, COM port via SetCommState. `tray_*.go`: tray icon + start-at-login (Windows: Shell_NotifyIcon + HKCU Run key, no deps; Linux: StatusNotifierItem over D-Bus via godbus + XDG autostart). | Linux **tested over a pty**; Windows tray/autostart/parser unit-tested on a real desktop |
+| `daemon/` | OS daemon. `linux.go`: hwmon/procfs, every mounted block device from `/proc/mounts` (USB, NTFS Windows partitions). `windows.go`: kernel32 for load/RAM/drives (fixed + removable), COM port via SetCommState. `wmi_windows.go`: dependency-free WMI client over raw COM; `sensors_windows.go`: GPU name/load/VRAM, ACPI thermal zone and disk temperatures (storage IOCTL, else WMI S.M.A.R.T.); `gpuvendor_windows.go`: GPU temperature via the AMD ADL / NVIDIA NVML driver libraries; `asuswmi_windows.go`: CPU temperature + fan RPM on ASUS boards via the firmware.s ASUSHW ACPI-WMI Super I/O reads (elevated); with LibreHardwareMonitor (`lhm_windows.go`) as an optional fallback for what WMI lacks. `icon/gen.go`: draws the app icon and emits `hwmond.ico` plus the `rsrc_windows_*.syso` resource objects (hand-built COFF, no tools) that give `hwmond.exe` its icon. `tray_*.go`: tray icon + start-at-login (Windows: Shell_NotifyIcon + HKCU Run key, no deps; Linux: StatusNotifierItem over D-Bus via godbus + XDG autostart). | Linux **tested over a pty**; Windows tray/autostart/parser unit-tested on a real desktop |
 | `display/core/` | Platform-independent parser + renderer (320×240). Shared by the simulator and the ESP32. | **tested** |
 | `display/sim/` | Host simulator: reads a serial device/file, renders frames to PNG. | **tested** |
 | `display/esp32_es3c28p/` | **The board in use.** Sketch + `build.sh` for the ESP32-S3 2.8" ES3C28P (ILI9341V, native USB). | syntax-checked; flash with `build.sh` |
@@ -101,8 +101,21 @@ settings; the app already asks the firmware to connect all controllers and retri
    extension (preinstalled on Ubuntu). The user must be in the `dialout` group to open the port.
 
    **Daemon (Windows)**: `GOOS=windows go build -o hwmond.exe ./daemon`, then `hwmond.exe` (USB display auto-detected; `-port COM5` for the COM build).
-   For temperatures and fan speed, run LibreHardwareMonitor with *Options → Remote Web Server → Run*
-   (port 8085; override with `HWMON_LHM_URL`). `hwmond.exe -autostart on` registers it under
+   Load, RAM, disks and disk temperatures (storage temperature IOCTL, NVMe answers it for any user;
+   S.M.A.R.T. counters via WMI when run as administrator), GPU name/load/VRAM (WMI performance
+   counters) and GPU temperature (the vendor driver.s own ADL or NVML library) all come from Windows
+   and the drivers already installed, no helper needed. CPU temperature and fan RPM come from the ACPI
+   thermal zone where the firmware has one (most laptops), or, on ASUS boards, from the Nuvoton Super I/O
+   through the firmware.s own `ASUSHW` WMI methods, which Windows opens to administrators only, so run
+   `hwmond.exe` elevated for that (an elevated prompt, or a Task Scheduler task with *Run with highest
+   privileges* at logon). On AMD Zen CPUs the same firmware methods also reach PCI configuration space,
+   which `hwmond` uses to read the CPU's own Tctl/Tdie through the SMN index/data window, the same
+   register LibreHardwareMonitor and Ryzen Master show; the Super I/O "CPU" register is only the
+   fallback, since it is the socket thermistor and sits 10-15 °C below the die. Everything else has no
+   driver-free source. For what is still missing, optionally run LibreHardwareMonitor with
+   *Options → Remote Web Server → Run*: `hwmond` fills the missing fields from it, and a die sensor
+   from LHM replaces a board-thermistor CPU reading (port 8085; `HWMON_LHM_URL`
+   overrides the URL, `HWMON_LHM_URL=off` disables the fallback). `hwmond.exe -autostart on` registers it under
    `HKCU\...\CurrentVersion\Run` (visible in Task Manager → Startup apps) so it starts at login with
    `-tray`; `-autostart off` removes it. When started from the Run key / Explorer the console window
    closes itself; from a terminal the log stays visible. For the COM build find the port in
