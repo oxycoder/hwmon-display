@@ -29,16 +29,16 @@ func envOr(k, d string) string {
 }
 
 var (
-	kernel32               = syscall.NewLazyDLL("kernel32.dll")
-	procGetSystemTimes     = kernel32.NewProc("GetSystemTimes")
-	procGlobalMemoryStatx  = kernel32.NewProc("GlobalMemoryStatusEx")
-	procSetCommState       = kernel32.NewProc("SetCommState")
-	procGetCommState       = kernel32.NewProc("GetCommState")
-	procSetCommTimeouts    = kernel32.NewProc("SetCommTimeouts")
-	procEscapeCommFunc     = kernel32.NewProc("EscapeCommFunction")
-	procGetLogicalDrives   = kernel32.NewProc("GetLogicalDrives")
-	procGetDriveType       = kernel32.NewProc("GetDriveTypeW")
-	procGetDiskFreeSpaceEx = kernel32.NewProc("GetDiskFreeSpaceExW")
+	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
+	procGetSystemTimes       = kernel32.NewProc("GetSystemTimes")
+	procGlobalMemoryStatx    = kernel32.NewProc("GlobalMemoryStatusEx")
+	procSetCommState         = kernel32.NewProc("SetCommState")
+	procGetCommState         = kernel32.NewProc("GetCommState")
+	procSetCommTimeouts      = kernel32.NewProc("SetCommTimeouts")
+	procEscapeCommFunc       = kernel32.NewProc("EscapeCommFunction")
+	procGetLogicalDrives     = kernel32.NewProc("GetLogicalDrives")
+	procGetDriveType         = kernel32.NewProc("GetDriveTypeW")
+	procGetDiskFreeSpaceEx   = kernel32.NewProc("GetDiskFreeSpaceExW")
 )
 
 // ---------- static -----------------------------------------------------------
@@ -152,12 +152,18 @@ type lhmNode struct {
 	Text     string    `json:"Text"`
 	Value    string    `json:"Value"`
 	ImageURL string    `json:"ImageURL"`
+	HardwareId string  `json:"HardwareId"`
 	Children []lhmNode `json:"Children"`
 }
 
 type lhmReading struct {
 	cpuTemp, fan int
 	diskTemps    []int
+	gpuName      string
+	gpuTemp      int
+	gpuLoad      int
+	gpuMemUsed   int
+	gpuMemTotal  int
 	at           time.Time
 }
 
@@ -178,6 +184,7 @@ func lhm() lhmReading {
 			r.cpuTemp = findCPUTemp(&root)
 			r.fan = findFan(&root)
 			findDiskTemps(&root, &r.diskTemps)
+			findGPU(&root, &r)
 		}
 	}
 	lhmCache = r
@@ -208,6 +215,12 @@ func cpuNodes(n *lhmNode, out *[]*lhmNode) {
 }
 
 func findCPUTemp(root *lhmNode) int {
+	// 1. Prioritize motherboard Super I/O / LPC sensor named "CPU" (e.g. 44°C)
+	if v := findSuperIOCPUTemp(root); v >= 0 {
+		return v
+	}
+
+	// 2. Fallback to CPU package sensors
 	var nodes []*lhmNode
 	cpuNodes(root, &nodes)
 	model := strings.ToLower(cpuModel())
@@ -220,6 +233,26 @@ func findCPUTemp(root *lhmNode) int {
 			if v := tempOf(n, []string{"Package", "Tctl", "Tdie", "CPU Core", "Core Average"}); v >= 0 {
 				return v
 			}
+		}
+	}
+	return -1
+}
+
+func findSuperIOCPUTemp(n *lhmNode) int {
+	if strings.Contains(n.HardwareId, "/lpc") {
+		for i := range n.Children {
+			if n.Children[i].Text == "Temperatures" {
+				for _, s := range n.Children[i].Children {
+					if s.Text == "CPU" {
+						return numOf(s.Value)
+					}
+				}
+			}
+		}
+	}
+	for i := range n.Children {
+		if v := findSuperIOCPUTemp(&n.Children[i]); v >= 0 {
+			return v
 		}
 	}
 	return -1
@@ -292,6 +325,87 @@ func findDiskTemps(n *lhmNode, out *[]int) {
 	for i := range n.Children {
 		findDiskTemps(&n.Children[i], out)
 	}
+}
+
+// ---------- GPU Parsing Support ----------------------------------------------
+
+func findGPU(root *lhmNode, out *lhmReading) {
+	var gpuNode *lhmNode
+	walkGPU(root, &gpuNode)
+	if gpuNode == nil {
+		return
+	}
+	out.gpuName = gpuNode.Text
+	out.gpuTemp = tempOf(gpuNode, []string{"GPU Core", "Core", "Hot Spot"})
+	out.gpuLoad = loadOf(gpuNode, []string{"GPU Core", "D3D 3D"})
+	out.gpuMemUsed, out.gpuMemTotal = gpuMemOf(gpuNode)
+}
+
+func walkGPU(n *lhmNode, found **lhmNode) {
+	if strings.HasPrefix(n.HardwareId, "/gpu") || strings.Contains(n.ImageURL, "ati.png") || strings.Contains(n.ImageURL, "nvidia.png") || strings.Contains(n.ImageURL, "intel.png") {
+		*found = n
+		return
+	}
+	for i := range n.Children {
+		walkGPU(&n.Children[i], found)
+		if *found != nil {
+			return
+		}
+	}
+}
+
+func loadOf(n *lhmNode, prefs []string) int {
+	for i := range n.Children {
+		if n.Children[i].Text == "Load" {
+			best := -1
+			for _, s := range n.Children[i].Children {
+				v := numOf(s.Value)
+				for _, p := range prefs {
+					if strings.Contains(s.Text, p) {
+						return v
+					}
+				}
+				if v > best {
+					best = v
+				}
+			}
+			return best
+		}
+	}
+	return -1
+}
+
+func gpuMemOf(n *lhmNode) (used, total int) {
+	used, total = -1, -1
+	for i := range n.Children {
+		if n.Children[i].Text == "Data" || n.Children[i].Text == "SmallData" {
+			for _, s := range n.Children[i].Children {
+				if strings.Contains(s.Text, "GPU Memory Used") || strings.Contains(s.Text, "Dedicated Memory Used") {
+					used = numMB(s.Value)
+				}
+				if strings.Contains(s.Text, "GPU Memory Total") || strings.Contains(s.Text, "Dedicated Memory Total") {
+					total = numMB(s.Value)
+				}
+			}
+		}
+	}
+	return
+}
+
+func numMB(v string) int {
+	f := strings.Fields(strings.ReplaceAll(v, ",", ""))
+	if len(f) < 2 {
+		return numOf(v)
+	}
+	val, err := strconv.ParseFloat(f[0], 64)
+	if err != nil {
+		return -1
+	}
+	unit := strings.ToUpper(f[1])
+	if strings.HasPrefix(unit, "GB") {
+		return int(val * 1024 + 0.5)
+	}
+	return int(val + 0.5)
 }
 
 // ---------- serial port -------------------------------------------------------
