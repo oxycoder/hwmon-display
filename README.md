@@ -29,7 +29,7 @@ binary covers both builds.
 |---|---|---|
 | `uefi/hwmon.c` | UEFI app (GNU-EFI, C). Reads CPUID, SMBIOS, memory map, PCI; writes to the 16550 directly and to USB-serial via `EFI_USB_IO_PROTOCOL`; chainloads the real bootloader. | **tested in QEMU/OVMF, serial + USB** |
 | `uefi/usbio.h` | `EFI_USB_IO_PROTOCOL` definition (gnu-efi doesn't ship one). | |
-| `daemon/` | OS daemon, no deps. `linux.go`: hwmon/procfs. `windows.go`: kernel32 for load/RAM, LibreHardwareMonitor's web server for temp/fan, COM port via SetCommState. | Linux **tested over a pty**; Windows cross-built, parser unit-tested |
+| `daemon/` | OS daemon. `linux.go`: hwmon/procfs, every mounted block device from `/proc/mounts` (USB, NTFS Windows partitions). `windows.go`: kernel32 for load/RAM/drives (fixed + removable), LibreHardwareMonitor's web server for temp/fan, COM port via SetCommState. `tray_*.go`: tray icon + start-at-login (Windows: Shell_NotifyIcon + HKCU Run key, no deps; Linux: StatusNotifierItem over D-Bus via godbus + XDG autostart). | Linux **tested over a pty**; Windows tray/autostart/parser unit-tested on a real desktop |
 | `display/core/` | Platform-independent parser + renderer (320×240). Shared by the simulator and the ESP32. | **tested** |
 | `display/sim/` | Host simulator: reads a serial device/file, renders frames to PNG. | **tested** |
 | `display/esp32_es3c28p/` | **The board in use.** Sketch + `build.sh` for the ESP32-S3 2.8" ES3C28P (ILI9341V, native USB). | syntax-checked; flash with `build.sh` |
@@ -42,11 +42,18 @@ One line per frame, `\n`-terminated, must start with `SRC=`:
 
 ```
 SRC=UEFI|CPU=...|THREADS=16|RAM_MB=32768|BOARD=...|BIOS=...|DIMMS=2|DIMM_MB=32768|DIMM_MHZ=6000|GPU=1002:744c|NIC=10ec:8125|STORAGE_CTRL=2
-SRC=OS|HOST=tt-desktop|CPU=...|THREADS=16|OS=Ubuntu 24.04|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,/home:40:1863|DISK_T=38,35|GPU=Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|VRAM_USED_MB=7500|VRAM_MB=24576
+SRC=OS|HOST=tt-desktop|CPU=...|THREADS=16|OS=Ubuntu 24.04|LOAD=37|TEMP=68|FAN=1180|RAM_USED_MB=11850|RAM_MB=31900|DISK=/:62:931,home:40:1863,USB:5:64,Window:71:931|DISK_T=38,35|GPU=Radeon RX 7900 XTX|GPU_TEMP=61|GPU_LOAD=42|VRAM_USED_MB=7500|VRAM_MB=24576
 ```
 
 Unknown keys are ignored; missing keys render as `--`. Anything not starting with `SRC=`
 (firmware console echo, noise) is dropped. After 5 s of silence the display shows a NO SIGNAL banner.
+
+`DISK` is `label:used%:GB`, up to four volumes, labels cut to 6 chars, root first then in mount
+order. On Linux that is every mounted block-device filesystem (ext4/xfs/btrfs, ntfs/ntfs3/ntfs-3g,
+exfat/vfat...) except `/boot*`, snaps, loop/zram and container overlays, so a plugged-in USB stick
+(`/media/<user>/USB` → `USB`) or a mounted Windows partition (`/media/<user>/Windows` → `Window`)
+appears as soon as the desktop mounts it. On Windows it is every fixed or removable drive letter
+with media present. Hot-plug is picked up on the next frame; nothing needs restarting.
 
 ## Test with no hardware
 
@@ -86,13 +93,24 @@ settings; the app already asks the firmware to connect all controllers and retri
    `efibootmgr -c -d /dev/nvme0n1 -p 1 -L hwmon -l '\EFI\hwmon\hwmon.efi' -u '\EFI\ubuntu\shimx64.efi'`
    (the `-u` string is the loader it chainloads; Windows: `\EFI\Microsoft\Boot\bootmgfw.efi`).
    Secure Boot: sign with `sbctl sign uefi/hwmon.efi` or disable.
-4. **Daemon (Linux)**: `go build -o /usr/local/bin/hwmond ./daemon` + a systemd unit running
-   `hwmond` (USB display, auto-detected) or `hwmond -port /dev/ttyS0` for the COM build.
+4. **Daemon (Linux)**: `go build -o /usr/local/bin/hwmond ./daemon`, then either a systemd unit running
+   `hwmond` (USB display, auto-detected) or `hwmond -port /dev/ttyS0` for the COM build, **or** the
+   desktop route: `hwmond -autostart on` writes `~/.config/autostart/hwmond.desktop` so it starts at
+   login with `-tray` (plus any `-port`/`-interval` you passed). The tray icon uses the
+   StatusNotifierItem protocol: KDE/Xfce/Cinnamon show it natively, GNOME needs the AppIndicator
+   extension (preinstalled on Ubuntu). The user must be in the `dialout` group to open the port.
 
    **Daemon (Windows)**: `GOOS=windows go build -o hwmond.exe ./daemon`, then `hwmond.exe` (USB display auto-detected; `-port COM5` for the COM build).
    For temperatures and fan speed, run LibreHardwareMonitor with *Options → Remote Web Server → Run*
-   (port 8085; override with `HWMON_LHM_URL`). Autostart: Task Scheduler, "At log on", run
-   `hwmond.exe` hidden. For the COM build find the port in Device Manager → Ports (USB Serial Device).
+   (port 8085; override with `HWMON_LHM_URL`). `hwmond.exe -autostart on` registers it under
+   `HKCU\...\CurrentVersion\Run` (visible in Task Manager → Startup apps) so it starts at login with
+   `-tray`; `-autostart off` removes it. When started from the Run key / Explorer the console window
+   closes itself; from a terminal the log stays visible. For the COM build find the port in
+   Device Manager → Ports (USB Serial Device).
+
+   **Tray icon (both)**: `hwmond -tray` adds an icon whose tooltip shows the state (*display on COM3*,
+   *waiting for a USB display...*, *display disconnected, searching...*); its menu has a
+   *Start on login* checkbox (same as `-autostart`) and *Quit*.
 5. **ESP32**: Arduino IDE → ESP32 Dev Module, TFT_eSPI with `User_Setup_CYD.h`, flash `esp32_cyd.ino`.
 
 ## Notes / gotchas learned

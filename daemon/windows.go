@@ -184,17 +184,20 @@ func shortGPUName(n string) string {
 	return strings.Join(strings.Fields(n), " ")
 }
 
-// disks: "C:62:931,D:40:1863" = letter : used% : total GB, fixed drives only.
+// disks: "C:62:931,D:40:1863,E:5:64" = letter : used% : total GB for fixed and
+// removable (USB stick / external HDD) drives with media present. Empty card
+// readers fail GetDiskFreeSpaceEx and are skipped; network drives are ignored.
 func disks() string {
 	r, _, _ := procGetLogicalDrives.Call()
-	var parts []string
-	for i := 0; i < 26 && len(parts) < 4; i++ {
+	var d diskList
+	for i := 0; i < 26; i++ {
 		if r&(1<<uint(i)) == 0 {
 			continue
 		}
 		root := string(rune('A'+i)) + `:\`
 		p, _ := syscall.UTF16PtrFromString(root)
-		if t, _, _ := procGetDriveType.Call(uintptr(unsafe.Pointer(p))); t != 3 { // DRIVE_FIXED
+		const driveRemovable, driveFixed = 2, 3
+		if t, _, _ := procGetDriveType.Call(uintptr(unsafe.Pointer(p))); t != driveFixed && t != driveRemovable {
 			continue
 		}
 		var free, total, totalFree uint64
@@ -202,10 +205,11 @@ func disks() string {
 			uintptr(unsafe.Pointer(&total)), uintptr(unsafe.Pointer(&totalFree))); ok == 0 || total == 0 {
 			continue
 		}
-		used := int(100 * (total - totalFree) / total)
-		parts = append(parts, fmt.Sprintf("%c:%d:%d", 'A'+i, used, total/(1000*1000*1000)))
+		if !d.add(string(rune('A'+i)), total-totalFree, total) {
+			break
+		}
 	}
-	return strings.Join(parts, ",")
+	return d.String()
 }
 
 func diskTemps() string {

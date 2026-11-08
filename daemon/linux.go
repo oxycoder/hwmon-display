@@ -43,27 +43,113 @@ func osName() string {
 	return "Linux"
 }
 
-// disks: "/:62:931,/home:40:1863" = mount : used% : total GB for the main filesystems.
+// disks: "/:62:931,home:40:1863,USB:5:64,Win:71:931" = label : used% : total GB
+// for every mounted block-device filesystem: internal partitions, USB sticks /
+// external drives (udisks mounts them under /media or /run/media) and Windows
+// partitions (ntfs / ntfs3 / ntfs-3g shows up as fuseblk / exfat / vfat).
+// Root is listed first, the rest in mount order; the display shows four at most.
 func disks() string {
-	var parts []string
-	for _, m := range []string{"/", "/home", "/data"} {
+	var d diskList
+	seen := map[uint64]bool{}
+	for _, m := range mountedVolumes() {
 		var st syscall.Statfs_t
 		if syscall.Statfs(m, &st) != nil || st.Blocks == 0 {
 			continue
 		}
-		total := uint64(st.Bsize) * st.Blocks
-		avail := uint64(st.Bsize) * st.Bavail
-		if m != "/" && sameDevice(m) {
+		var s syscall.Stat_t
+		if syscall.Stat(m, &s) != nil || seen[s.Dev] { // bind mounts / btrfs subvolumes
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s:%d:%d", m, 100*(total-avail)/total, total/(1000*1000*1000)))
+		seen[s.Dev] = true
+		total := uint64(st.Bsize) * st.Blocks
+		avail := uint64(st.Bsize) * st.Bavail
+		if !d.add(diskLabel(m), total-avail, total) {
+			break
+		}
 	}
-	return strings.Join(parts, ",")
+	return d.String()
 }
 
-func sameDevice(m string) bool {
-	var a, b syscall.Stat_t
-	return syscall.Stat("/", &a) == nil && syscall.Stat(m, &b) == nil && a.Dev == b.Dev
+// diskLabel: "/" stays "/" (the display prints it as "root"); anything else is the
+// last path element, e.g. /media/tt/Windows -> "Windows", /home -> "home".
+func diskLabel(mount string) string {
+	if mount == "/" {
+		return "/"
+	}
+	return filepath.Base(mount)
+}
+
+// diskFS lists the filesystem types worth showing as "a disk".
+var diskFS = map[string]bool{
+	"ext2": true, "ext3": true, "ext4": true, "xfs": true, "btrfs": true, "f2fs": true,
+	"ntfs": true, "ntfs3": true, "fuseblk": true, // Windows partitions (fuseblk = ntfs-3g)
+	"exfat": true, "vfat": true, "msdos": true, // USB sticks / SD cards
+	"hfsplus": true, "udf": true, "jfs": true, "reiserfs": true, "zfs": true,
+}
+
+// mountedVolumes returns the mount points of real block devices from /proc/mounts,
+// root first, skipping pseudo filesystems, loop/snap mounts and the EFI partition.
+func mountedVolumes() []string {
+	b, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return []string{"/"}
+	}
+	return parseMounts(string(b))
+}
+
+// parseMounts filters /proc/mounts text down to the volumes worth showing.
+func parseMounts(mounts string) []string {
+	var out []string
+	for _, l := range strings.Split(mounts, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 3 || !diskFS[f[2]] {
+			continue
+		}
+		dev, m := f[0], unescapeMount(f[1])
+		if !strings.HasPrefix(dev, "/dev/") && f[2] != "zfs" {
+			continue
+		}
+		if strings.HasPrefix(dev, "/dev/loop") || strings.HasPrefix(dev, "/dev/zram") {
+			continue
+		}
+		if m == "/" {
+			out = append([]string{"/"}, out...)
+			continue
+		}
+		skip := false
+		for _, p := range []string{"/boot", "/snap/", "/var/lib/docker", "/var/lib/containers", "/var/snap", "/proc", "/sys", "/dev", "/run/"} {
+			if strings.HasPrefix(m, p) && !strings.HasPrefix(m, "/run/media") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"/"}
+	}
+	return out
+}
+
+// unescapeMount decodes /proc/mounts octal escapes ("\040" = space).
+func unescapeMount(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				sb.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		sb.WriteByte(s[i])
+	}
+	return sb.String()
 }
 
 func diskTemps() string {
