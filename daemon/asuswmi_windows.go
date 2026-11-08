@@ -55,7 +55,13 @@ func asusHW() string {
 		rows, err := wmiQuery(nsWMI, "SELECT * FROM ASUSHW", "__RELPATH")
 		if err != nil || len(rows) == 0 || rows[0]["__RELPATH"].Str() == "" {
 			if err != nil && !isAdmin() {
-				fmt.Fprintln(os.Stderr, "asus-wmi: ASUSHW not accessible without administrator rights; CPU temp/fan need LibreHardwareMonitor or an elevated hwmond")
+				msg := "asus-wmi: ASUSHW not accessible without administrator rights; CPU temp/fan need LibreHardwareMonitor or an elevated hwmond"
+				if runKeyEnabled() && !taskExists() {
+					// A stale Run-key autostart (registered before the task route existed,
+					// or after a declined UAC prompt) launches hwmond unelevated at login.
+					msg += "; login autostart is the unelevated HKCU Run key, run `hwmond -autostart on` once and accept the UAC prompt to switch to the elevated Task Scheduler task"
+				}
+				fmt.Fprintln(os.Stderr, msg)
 			}
 			return
 		}

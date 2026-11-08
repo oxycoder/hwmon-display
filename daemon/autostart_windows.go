@@ -7,8 +7,10 @@
 // logon task with RunLevel HighestAvailable: it starts hwmond elevated at
 // login without a UAC prompt. Creating such a task itself needs an elevated
 // process, so a non-elevated `-autostart on` (or the tray toggle) relaunches
-// hwmond through the UAC "runas" verb to do it; if the user declines, the
-// Run key is written instead and a warning explains what will be missing.
+// hwmond through the UAC "runas" verb to do it. If the user declines, nothing
+// is registered and the error says so: an unelevated autostart would only look
+// like it works, so the Run key is no longer written; it is only ever removed
+// (older installs registered it).
 
 package main
 
@@ -29,12 +31,16 @@ import (
 const taskName = "hwmond"
 
 // uacPrompt lets tests turn off the self-elevation (which would otherwise pop
-// a UAC dialog) and exercise the Run-key fallback directly.
+// a UAC dialog) and exercise the unelevated refusal directly.
 var uacPrompt = true
+
+// errNeedsAdmin is returned when autostart cannot be registered because the
+// user declined (or the test disabled) the UAC elevation.
+var errNeedsAdmin = fmt.Errorf("registering the login task needs administrator approval; nothing was registered")
 
 // setAutostart registers (or removes) hwmond at login. Elevated: a
 // HighestAvailable logon task, replacing any older Run entry. Not elevated:
-// relaunch elevated to create the task; on refusal fall back to the Run key.
+// relaunch elevated to create the task; on refusal register nothing.
 func setAutostart(enable bool) error {
 	if !enable {
 		errTask := deleteTask()
@@ -51,23 +57,21 @@ func setAutostart(enable bool) error {
 		fmt.Fprintf(os.Stderr, "autostart: Task Scheduler logon task %q registered with highest privileges\n", taskName)
 		return setRunKey(false) // one launcher only; the task supersedes the key
 	}
-	if uacPrompt {
-		err := relaunchElevated(append([]string{"-autostart", "on"}, loginArgs...))
-		if err == nil {
-			return nil
-		}
-		fmt.Fprintln(os.Stderr, "autostart: elevation declined or failed:", err)
+	if !uacPrompt {
+		return errNeedsAdmin
 	}
-	if err := setRunKey(true); err != nil {
-		return err
+	if err := relaunchElevated(append([]string{"-autostart", "on"}, loginArgs...)); err != nil {
+		return fmt.Errorf("%v (%v)", errNeedsAdmin, err)
 	}
-	fmt.Fprintln(os.Stderr, "autostart: registered without administrator rights (Run key); CPU temperature and CPU power will show \"--\" at login. Run `hwmond -autostart on` from an elevated prompt to register a highest-privilege logon task instead.")
 	return nil
 }
 
-// autostartEnabled reports whether either launcher is registered.
+// autostartEnabled reports whether the elevated logon task is registered. A
+// leftover Run key from an older install does not count: it starts hwmond
+// unelevated, so the toggle shows "off" and enabling it upgrades to the task
+// (which also deletes the key).
 func autostartEnabled() bool {
-	return taskExists() || runKeyEnabled()
+	return taskExists()
 }
 
 // ---------- Task Scheduler via schtasks.exe -------------------------------

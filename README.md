@@ -175,9 +175,11 @@ settings; the app already asks the firmware to connect all controllers and retri
    *Start on login*) registers a Task Scheduler logon task `hwmond` that runs with highest privileges,
    so the login instance is elevated and the ASUSHW CPU temperature / CPU power work. Creating that
    task needs administrator rights, so a non-elevated hwmond relaunches itself through a UAC prompt;
-   decline it and hwmond falls back to an `HKCU\...\CurrentVersion\Run` entry (visible in Task
-   Manager → Startup apps), which starts unelevated and shows `--` for CPU temperature and power.
-   `-autostart off` removes whichever is registered. When started from the task / Run key / Explorer the console window
+   decline it and nothing is registered (the tray shows a message box, the command exits with an
+   error): an unelevated login instance would start fine but show `--` for CPU temperature and power,
+   so there is deliberately no `HKCU\...\CurrentVersion\Run` fallback any more. `-autostart off`
+   removes the task and any Run entry left from an older version (the tray checkbox and the control
+   panel's *autostart* field report only the task). When started from the task / Explorer the console window
    closes itself; from a terminal the log stays visible. For the COM build find the port in
    Device Manager → Ports (USB Serial Device).
 

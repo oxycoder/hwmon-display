@@ -19,6 +19,10 @@ import (
 	"github.com/godbus/dbus/v5/prop"
 )
 
+// reportAutostartError: the XDG autostart entry needs no privileges, so a
+// failure is a plain file error; toggleAutostart has already logged it.
+func reportAutostartError(error) {}
+
 const (
 	sniIface    = "org.kde.StatusNotifierItem"
 	sniPath     = dbus.ObjectPath("/StatusNotifierItem")

@@ -43,6 +43,11 @@ func main() {
 
 	loginArgs = autostartArgs(*port, *interval, *web)
 	if *autostart != "" {
+		if *autostart == "on" && *port == "-" {
+			// A login instance has no stdout; it would exit on the first frame.
+			fmt.Fprintln(os.Stderr, "-autostart on: -port - (frames to stdout) cannot be the login configuration")
+			os.Exit(1)
+		}
 		if err := configureAutostart(*autostart); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -244,6 +249,7 @@ func configureAutostart(mode string) error {
 func toggleAutostart() {
 	if err := setAutostart(!autostartEnabled()); err != nil {
 		fmt.Fprintln(os.Stderr, "autostart:", err)
+		reportAutostartError(err) // the tray instance has no visible console
 	}
 }
 

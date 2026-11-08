@@ -28,6 +28,7 @@ var (
 	procPostMessage       = user32.NewProc("PostMessageW")
 	procPostQuitMessage   = user32.NewProc("PostQuitMessage")
 	procRegisterWindowMsg = user32.NewProc("RegisterWindowMessageW")
+	procMessageBox        = user32.NewProc("MessageBoxW")
 	procCreatePopupMenu   = user32.NewProc("CreatePopupMenu")
 	procAppendMenu        = user32.NewProc("AppendMenuW")
 	procTrackPopupMenu    = user32.NewProc("TrackPopupMenu")
@@ -353,6 +354,16 @@ func drawIcon(hinst uintptr) uintptr {
 // hideOwnConsole closes the console window when hwmond is the only process
 // attached to it (launched from Explorer / the Run key), but leaves a shell's
 // terminal alone so `hwmond -tray` run by hand still shows its log.
+// reportAutostartError shows a failed tray "Start on login" toggle in a message
+// box: the tray instance has freed its console, so stderr goes nowhere. Called
+// on the menu's (window) thread, so the box is modal to the tray.
+func reportAutostartError(err error) {
+	const mbOK, mbIconWarning = 0x0, 0x30
+	text, _ := syscall.UTF16PtrFromString("Start on login: " + err.Error() + "\n\nhwmond must start elevated at login so the firmware CPU sensors (temperature, package power) are readable. Try again and accept the UAC prompt.")
+	title, _ := syscall.UTF16PtrFromString("hwmond")
+	procMessageBox.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), mbOK|mbIconWarning)
+}
+
 func hideOwnConsole() {
 	var pids [4]uint32
 	if n, _, _ := procGetConsoleProcs.Call(uintptr(unsafe.Pointer(&pids[0])), uintptr(len(pids))); n == 1 {

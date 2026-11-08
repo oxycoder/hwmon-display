@@ -33,11 +33,11 @@ func TestTrayIcon(t *testing.T) {
 	}
 }
 
-// TestAutostartRegistry registers and removes the login entry: the HKCU Run
-// value when the test runs unelevated (the UAC relaunch is turned off), the
-// highest-privilege scheduled task when it runs elevated. It changes the
-// current user's startup list (restored afterwards), so it runs only with
-// HWMOND_AUTOSTART_TEST=1.
+// TestAutostartRegistry registers and removes the login entry. Unelevated (the
+// UAC relaunch is turned off) enabling must refuse and register nothing, not
+// fall back to the unelevated Run key; elevated it registers the
+// highest-privilege scheduled task. It changes the current user's startup list
+// (restored afterwards), so it runs only with HWMOND_AUTOSTART_TEST=1.
 func TestAutostartRegistry(t *testing.T) {
 	if os.Getenv("HWMOND_AUTOSTART_TEST") != "1" {
 		t.Skip("set HWMOND_AUTOSTART_TEST=1 to exercise the Run key / scheduled task")
@@ -64,23 +64,31 @@ func TestAutostartRegistry(t *testing.T) {
 		}
 	}()
 	loginArgs = []string{"-tray", "-port", "COM3"}
-	if err := setAutostart(true); err != nil {
+	if err := setAutostart(false); err != nil { // start from a clean slate
+		t.Fatal(err)
+	}
+	err := setAutostart(true)
+	if !isAdmin() {
+		if err == nil || !strings.Contains(err.Error(), "administrator") {
+			t.Fatalf("unelevated enable: err = %v, want the needs-administrator refusal", err)
+		}
+		if autostartEnabled() || runKeyEnabled() || taskExists() {
+			t.Fatalf("unelevated enable registered something: task=%v runKey=%v", taskExists(), runKeyEnabled())
+		}
+		return
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !autostartEnabled() {
 		t.Fatal("entry not found after enabling")
 	}
-	exe, _ := exePath()
-	if isAdmin() {
-		if !taskExists() || runKeyEnabled() {
-			t.Fatalf("elevated: task=%v runKey=%v, want the task only", taskExists(), runKeyEnabled())
-		}
-		out, err := runSchtasks("/Query", "/TN", taskName, "/XML")
-		if err != nil || !strings.Contains(out, "<RunLevel>HighestAvailable</RunLevel>") || !strings.Contains(out, "-tray -port COM3") {
-			t.Fatalf("task XML: %v\n%s", err, out)
-		}
-	} else if v := runValueString(); !strings.Contains(v, exe) || !strings.HasSuffix(v, "-tray -port COM3") {
-		t.Fatalf("Run value = %q", v)
+	if !taskExists() || runKeyEnabled() {
+		t.Fatalf("elevated: task=%v runKey=%v, want the task only", taskExists(), runKeyEnabled())
+	}
+	out, err := runSchtasks("/Query", "/TN", taskName, "/XML")
+	if err != nil || !strings.Contains(out, "<RunLevel>HighestAvailable</RunLevel>") || !strings.Contains(out, "-tray -port COM3") {
+		t.Fatalf("task XML: %v\n%s", err, out)
 	}
 	if err := setAutostart(false); err != nil {
 		t.Fatal(err)
