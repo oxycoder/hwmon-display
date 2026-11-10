@@ -8,7 +8,7 @@
 //	hwmond -port /dev/ttyS0            # Linux, COM1
 //	hwmond -port COM5                  # Windows (WMI/driver libraries; run elevated on ASUS boards for CPU temp + fan)
 //	hwmond -port - -once               # print one line to stdout
-//	hwmond -tray                       # also show a tray icon (status, control panel, start-on-login toggle, quit)
+//	hwmond -tray                       # also show a tray icon (status, control panel, serial port picker, start-on-login toggle, quit)
 //	hwmond -web 127.0.0.1:8086         # control panel address (default); -web "" turns it off
 //	hwmond -autostart on               # start at login with the current flags (+ -tray); "off" removes it
 //	                                   # (Windows: elevated Task Scheduler logon task via a UAC prompt, so CPU temp/power work)
@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -36,12 +37,13 @@ func main() {
 	port := flag.String("port", "auto", "serial device (COM5, /dev/ttyACM0...), - for stdout, or auto (find the USB display)")
 	interval := flag.Duration("interval", time.Second, "send interval")
 	once := flag.Bool("once", false, "send one frame and exit")
-	tray := flag.Bool("tray", true, "show a system tray icon (status, start-on-login toggle, quit)")
+	tray := flag.Bool("tray", true, "show a system tray icon (status, serial port picker, start-on-login toggle, quit)")
 	web := flag.String("web", defaultWeb, "control panel address (web UI + JSON API: device info, custom screen content); \"\" disables it")
 	autostart := flag.String("autostart", "", "on|off: register/unregister hwmond to start at login (with the current -port/-interval/-web and -tray), then exit")
 	flag.Parse()
 
 	loginArgs = autostartArgs(*port, *interval, *web)
+	wantPort.Store(*port)
 	if *autostart != "" {
 		if *autostart == "on" && *port == "-" {
 			// A login instance has no stdout; it would exit on the first frame.
@@ -72,12 +74,18 @@ func main() {
 	static := staticInfo()
 	monitor := func() string { return static + "|" + dynamicInfo(cpu) }
 	for {
-		w := connect(*port, *once)
+		w := connect(*once)
 		curPort.Store(w)
 		onConnect(w)
 		for {
+			if w == os.Stdout && portSwitched.Swap(false) {
+				break // the tray picked a real port while frames went to stdout
+			}
 			line := scr.line(monitor) + "\n"
 			if _, err := w.WriteString(line); err != nil {
+				if portSwitched.Swap(false) {
+					break // selectPort closed the port on purpose: reconnect to the new one
+				}
 				fmt.Fprintln(os.Stderr, "write:", err)
 				if *once || w == os.Stdout {
 					os.Exit(1)
@@ -96,18 +104,25 @@ func main() {
 	}
 }
 
-// connect opens the requested port, or with "auto" searches for a USB display
-// (ESP32-S3 303a:1001, Espressif TinyUSB 303a:4001, RP2040 2e8a:000a) and keeps
-// retrying until one appears. Exits on failure only in -once mode.
-func connect(port string, once bool) *os.File {
-	if port == "-" {
-		return os.Stdout
-	}
-	for attempt := 0; ; attempt++ {
+// connect opens the selected port (selectedPort: the -port flag until the tray
+// changes it), or with "auto" searches for a USB display (ESP32-S3 303a:1001,
+// Espressif TinyUSB 303a:4001, RP2040 2e8a:000a) and keeps retrying until one
+// appears. The selection is re-read on every attempt so a tray change while
+// waiting takes effect at once. Exits on failure only in -once mode.
+func connect(once bool) *os.File {
+	prev := ""
+	for {
+		port := selectedPort()
+		first := port != prev // first try of this selection: say what we are waiting for
+		prev = port
+		if port == "-" {
+			return os.Stdout
+		}
 		cands := []string{port}
 		if port == "auto" {
 			cands = findPorts()
 		}
+		var lastErr error
 		for _, c := range cands {
 			f, err := openSerial(c)
 			if err == nil {
@@ -115,18 +130,108 @@ func connect(port string, once bool) *os.File {
 				setStatus("display on " + c)
 				return f
 			}
+			lastErr = err
 			fmt.Fprintln(os.Stderr, "open serial:", err)
 		}
 		if once {
 			fmt.Fprintln(os.Stderr, "no display found")
 			os.Exit(1)
 		}
-		if attempt == 0 {
-			fmt.Fprintln(os.Stderr, "waiting for a USB display...")
-			setStatus("waiting for a USB display...")
+		if first {
+			if port == "auto" {
+				fmt.Fprintln(os.Stderr, "waiting for a USB display...")
+				setStatus("waiting for a USB display...")
+			} else {
+				setStatus(fmt.Sprintf("cannot open %s (%v), retrying...", port, lastErr))
+			}
 		}
-		time.Sleep(2 * time.Second)
+		for i := 0; i < 20 && selectedPort() == port; i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
+}
+
+// ---------- serial port selection -------------------------------------------
+
+// wantPort is the port frames should go to: "auto", "-" or a device name. It
+// starts as the -port flag; the tray menu changes it at run time.
+var wantPort atomic.Value
+
+// portSwitched tells the main loop that its write failed because selectPort
+// closed the port on purpose, not because the display went away.
+var portSwitched atomic.Bool
+
+func selectedPort() string {
+	if s, _ := wantPort.Load().(string); s != "" {
+		return s
+	}
+	return "auto"
+}
+
+// selectPort switches the daemon to another serial port (or back to "auto").
+// The current port is closed so the main loop reconnects right away, and the
+// login-autostart arguments follow the choice so a later "Start on login"
+// registers it. Safe to call from the tray thread.
+func selectPort(name string) {
+	if name == "" || name == selectedPort() {
+		return
+	}
+	wantPort.Store(name)
+	loginArgs = withPort(loginArgs, name)
+	fmt.Fprintln(os.Stderr, "serial port:", name)
+	if f := curPort.Swap((*os.File)(nil)); f != nil {
+		portSwitched.Store(true)
+		if f != os.Stdout {
+			f.Close() // the main loop's next write fails and it reconnects
+		}
+	}
+	setStatus("switching to " + name + "...")
+}
+
+// withPort returns args with the -port flag replaced by port ("auto" = none).
+func withPort(args []string, port string) []string {
+	out := make([]string, 0, len(args)+2)
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-port" && i+1 < len(args) {
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	if port != "auto" {
+		out = append(out, "-port", port)
+	}
+	return out
+}
+
+// portChoice is one entry of the tray's "Serial port" submenu.
+type portChoice struct {
+	Name  string // what selectPort takes: "auto" or a device
+	Label string // menu text
+}
+
+// portChoices lists "Auto" plus every serial port on the machine, known
+// display MCUs marked, the current selection kept even when it is not
+// enumerated right now (unplugged, or a path the OS does not list).
+func portChoices() []portChoice {
+	out := []portChoice{{"auto", "Auto (USB display)"}}
+	known := map[string]bool{}
+	for _, p := range findPorts() {
+		known[p] = true
+	}
+	cur, seen := selectedPort(), false
+	for _, p := range listSerialPorts() {
+		label := p
+		if known[p] {
+			label += "  (USB display)"
+		}
+		out = append(out, portChoice{p, label})
+		seen = seen || p == cur
+	}
+	if !seen && cur != "auto" && cur != "-" {
+		out = append(out, portChoice{cur, cur + "  (not found)"})
+	}
+	return out
 }
 
 // ---------- display standby -------------------------------------------------
@@ -353,4 +458,37 @@ func clean(s string) string {
 		}
 	}
 	return sb.String()
+}
+
+// sortPorts orders port names naturally (COM3 before COM10, ttyACM0 before
+// ttyUSB0) and drops duplicates.
+func sortPorts(ports []string) []string {
+	sort.SliceStable(ports, func(i, j int) bool {
+		a, an := splitNum(ports[i])
+		b, bn := splitNum(ports[j])
+		if a != b {
+			return a < b
+		}
+		return an < bn
+	})
+	out := ports[:0]
+	for i, p := range ports {
+		if i == 0 || p != ports[i-1] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// splitNum splits "COM12" into ("COM", 12); a name without a trailing number gets -1.
+func splitNum(s string) (string, int) {
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
+	}
+	if i == len(s) {
+		return s, -1
+	}
+	n, _ := strconv.Atoi(s[i:])
+	return s[:i], n
 }

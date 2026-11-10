@@ -35,6 +35,8 @@ const (
 	idPanel     = 5
 	idAutostart = 3
 	idQuit      = 4
+	idPorts     = 6   // the "Serial port" submenu
+	idPortBase  = 100 // idPortBase+i: the i-th entry of portChoices()
 )
 
 type pixmap struct {
@@ -102,14 +104,38 @@ func (m *dbusMenu) items() []menuItem {
 	if panelURL() != "" {
 		items = append(items, menuItem{ID: idPanel, Props: map[string]dbus.Variant{"label": v("Open control panel")}})
 	}
+	sub := menuItem{ID: idPorts, Props: map[string]dbus.Variant{"label": v("Serial port"), "children-display": v("submenu")}, Children: []dbus.Variant{}}
+	for i, c := range portChoices() {
+		state := int32(0)
+		if c.Name == selectedPort() {
+			state = 1
+		}
+		sub.Children = append(sub.Children, dbus.MakeVariant(menuItem{ID: int32(idPortBase + i),
+			Props: map[string]dbus.Variant{"label": v(c.Label), "toggle-type": v("radio"), "toggle-state": v(state)}, Children: []dbus.Variant{}}))
+	}
+	items = append(items, sub)
 	return append(items,
 		menuItem{ID: idAutostart, Props: map[string]dbus.Variant{"label": v("Start on login"), "toggle-type": v("checkmark"), "toggle-state": v(auto)}},
 		menuItem{ID: idQuit, Props: map[string]dbus.Variant{"label": v("Quit")}},
 	)
 }
 
-func (m *dbusMenu) find(id int32) (menuItem, bool) {
+// all flattens the menu tree (top level, then submenu entries).
+func (m *dbusMenu) all() []menuItem {
+	var out []menuItem
 	for _, it := range m.items() {
+		out = append(out, it)
+		for _, c := range it.Children {
+			if ch, ok := c.Value().(menuItem); ok {
+				out = append(out, ch)
+			}
+		}
+	}
+	return out
+}
+
+func (m *dbusMenu) find(id int32) (menuItem, bool) {
+	for _, it := range m.all() {
 		if it.ID == id {
 			return it, true
 		}
@@ -126,13 +152,17 @@ func (m *dbusMenu) GetLayout(parent int32, depth int32, names []string) (uint32,
 		if !ok {
 			return rev, menuItem{}, dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", nil)
 		}
-		it.Children = []dbus.Variant{}
+		if depth == 0 {
+			it.Children = []dbus.Variant{}
+		}
 		return rev, it, nil
 	}
 	root := menuItem{ID: 0, Props: map[string]dbus.Variant{"children-display": v("submenu")}, Children: []dbus.Variant{}}
 	if depth != 0 {
 		for _, it := range m.items() {
-			it.Children = []dbus.Variant{}
+			if depth == 1 {
+				it.Children = []dbus.Variant{} // host asked for one level only
+			}
 			root.Children = append(root.Children, dbus.MakeVariant(it))
 		}
 	}
@@ -141,7 +171,7 @@ func (m *dbusMenu) GetLayout(parent int32, depth int32, names []string) (uint32,
 
 func (m *dbusMenu) GetGroupProperties(ids []int32, names []string) ([]idProps, *dbus.Error) {
 	out := []idProps{}
-	for _, it := range m.items() {
+	for _, it := range m.all() {
 		if len(ids) == 0 {
 			out = append(out, idProps{it.ID, it.Props})
 			continue
@@ -178,6 +208,13 @@ func (m *dbusMenu) Event(id int32, eventID string, data dbus.Variant, ts uint32)
 		m.t.conn.Close()
 		sendStandby()
 		os.Exit(0)
+	default:
+		if i := int(id) - idPortBase; i >= 0 {
+			if ch := portChoices(); i < len(ch) {
+				selectPort(ch[i].Name)
+				m.t.layoutChanged()
+			}
+		}
 	}
 	return nil
 }

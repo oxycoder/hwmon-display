@@ -219,3 +219,46 @@ func openSerial(name string) (*os.File, error) {
 	procEscapeCommFunc.Call(uintptr(h), 5) // SETDTR
 	return os.NewFile(uintptr(h), name), nil
 }
+
+// listSerialPorts lists every COM port the system knows right now, from
+// HKLM\HARDWARE\DEVICEMAP\SERIALCOMM (the live map: unplugged devices drop
+// out, unlike the Enum tree findPorts reads), sorted by number.
+func listSerialPorts() []string {
+	var ports []string
+	for _, v := range regValues(`HARDWARE\DEVICEMAP\SERIALCOMM`) {
+		if strings.HasPrefix(v, "COM") {
+			ports = append(ports, v)
+		}
+	}
+	return sortPorts(ports)
+}
+
+// regValues returns the REG_SZ data of every value under an HKLM key; nil
+// when the key is absent (SERIALCOMM disappears with the last serial device).
+func regValues(path string) []string {
+	p, _ := syscall.UTF16PtrFromString(path)
+	var h syscall.Handle
+	if syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, p, 0, syscall.KEY_READ, &h) != nil {
+		return nil
+	}
+	defer syscall.RegCloseKey(h)
+	var out []string
+	for i := uint32(0); ; i++ {
+		name := make([]uint16, 256)
+		data := make([]uint16, 256)
+		nlen, dlen := uint32(len(name)), uint32(len(data)*2)
+		var typ uint32
+		r, _, _ := procRegEnumValue.Call(uintptr(h), uintptr(i), uintptr(unsafe.Pointer(&name[0])), uintptr(unsafe.Pointer(&nlen)),
+			0, uintptr(unsafe.Pointer(&typ)), uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(&dlen)))
+		if r != 0 { // ERROR_NO_MORE_ITEMS (259) or anything else: done
+			break
+		}
+		const regSZ = 1
+		if typ == regSZ {
+			out = append(out, syscall.UTF16ToString(data))
+		}
+	}
+	return out
+}
+
+var procRegEnumValue = syscall.NewLazyDLL("advapi32.dll").NewProc("RegEnumValueW")

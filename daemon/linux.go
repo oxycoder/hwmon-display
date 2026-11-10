@@ -452,3 +452,22 @@ func openSerial(path string) (*os.File, error) {
 	}
 	return f, nil
 }
+
+// listSerialPorts lists the serial devices that have real hardware behind
+// them: /sys/class/tty entries with a device link (USB CDC/serial adapters,
+// enumerated UARTs), which leaves out the 30-odd bare ttyS* placeholders.
+func listSerialPorts() []string {
+	var ports []string
+	devs, _ := filepath.Glob("/sys/class/tty/*/device")
+	for _, d := range devs {
+		name := filepath.Base(filepath.Dir(d))
+		if strings.HasPrefix(name, "ttyS") {
+			// Legacy UART nodes all have a platform device; keep the ones a driver actually enabled.
+			if readTrim(filepath.Dir(d)+"/type") == "0" {
+				continue // PORT_UNKNOWN
+			}
+		}
+		ports = append(ports, "/dev/"+name)
+	}
+	return sortPorts(ports)
+}

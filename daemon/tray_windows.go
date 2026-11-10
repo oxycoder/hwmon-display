@@ -80,10 +80,13 @@ const (
 	tpmRightBtn = 0x0002
 	tpmBottom   = 0x0020
 
+	mfPopup = 0x0010
+
 	idStatus    = 1
 	idAutostart = 2
 	idQuit      = 3
 	idPanel     = 4
+	idPortBase  = 100 // idPortBase+i: the i-th entry of portChoices()
 )
 
 type notifyIconData struct {
@@ -279,6 +282,17 @@ func showMenu(hwnd uintptr) {
 	if panelURL() != "" {
 		add(mfString, idPanel, "Open control panel")
 	}
+	ports, _, _ := procCreatePopupMenu.Call()
+	choices := portChoices()
+	for i, c := range choices {
+		flags := uintptr(mfString)
+		if c.Name == selectedPort() {
+			flags |= mfChecked
+		}
+		t, _ := syscall.UTF16PtrFromString(c.Label)
+		procAppendMenu.Call(ports, flags, uintptr(idPortBase+i), uintptr(unsafe.Pointer(t)))
+	}
+	add(mfString|mfPopup, ports, "Serial port") // DestroyMenu(menu) frees the submenu too
 	auto := uintptr(mfString)
 	if autostartEnabled() {
 		auto |= mfChecked
@@ -299,6 +313,10 @@ func showMenu(hwnd uintptr) {
 		toggleAutostart()
 	case idQuit:
 		trayQuit(hwnd)
+	default:
+		if i := int(id) - idPortBase; i >= 0 && i < len(choices) {
+			selectPort(choices[i].Name)
+		}
 	}
 }
 

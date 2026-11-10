@@ -217,3 +217,14 @@ func restoreRunValue(cmd string) error {
 	defer syscall.RegCloseKey(h)
 	return writeRunValue(h, cmd)
 }
+
+// TestRegValues enumerates a DEVICEMAP key that always exists (VIDEO), the
+// same code listSerialPorts uses on SERIALCOMM, which is absent when no COM
+// device is plugged in.
+func TestRegValues(t *testing.T) {
+	vals := regValues(`HARDWARE\DEVICEMAP\VIDEO`)
+	if len(vals) == 0 {
+		t.Fatal("no values under the DEVICEMAP VIDEO key")
+	}
+	t.Logf("%d values, first %q; serial ports: %v", len(vals), vals[0], listSerialPorts())
+}
