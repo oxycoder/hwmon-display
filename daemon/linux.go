@@ -212,6 +212,9 @@ func gpuInfo() string {
 			if t := readInt(hw[0] + "/temp1_input"); t > 0 {
 				parts = append(parts, "GPU_TEMP="+strconv.Itoa(t/1000))
 			}
+			if f := readInt(hw[0] + "/fan1_input"); f > 0 {
+				parts = append(parts, "GPU_FAN="+strconv.Itoa(f))
+			}
 		}
 		if v := readTrim(d + "/gpu_busy_percent"); v != "" {
 			parts = append(parts, "GPU_LOAD="+v)

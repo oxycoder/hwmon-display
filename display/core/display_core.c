@@ -212,6 +212,13 @@ static void num_val(char *out, int sz, int t)    { if (t >= 0) snprintf(out, sz,
 static dc_color load_color(int l) { return l < 0 ? C_DIM : l < 70 ? C_OK : l < 90 ? C_WARN : C_HOT; }
 static dc_color power_color(int w) { return w < 0 ? C_DIM : C_ACCENT; }
 
+/* "CPU FAN 1180rpm", or "CPU FAN --" when there is no tachometer reading (0 / missing). */
+static void fan_text(char *out, int sz, const char *label, int rpm)
+{
+    if (rpm > 0) snprintf(out, sz, "%s %drpm", label, rpm);
+    else         snprintf(out, sz, "%s --", label);
+}
+
 /* Memory cell: "14.4" big + "/32GB" small; colour by fill percentage. */
 static void mem_cell(const dc_gfx *g, int x, int y, const char *label, int used_mb, int total_mb)
 {
@@ -233,6 +240,7 @@ static void render_os(const dc_state *s, const dc_gfx *g)
 {
     char buf[80], v[16];
     int load = ival(s, "LOAD", -1), temp = ival(s, "TEMP", -1), fan = ival(s, "FAN", -1);
+    int gfan = ival(s, "GPU_FAN", -1);                                 /* fan tachometers, rpm */
     int used = ival(s, "RAM_USED_MB", -1), total = ival(s, "RAM_MB", -1);
     int gload = ival(s, "GPU_LOAD", -1), gtemp = ival(s, "GPU_TEMP", -1);
     int vused = ival(s, "VRAM_USED_MB", -1), vtotal = ival(s, "VRAM_MB", -1);
@@ -304,13 +312,15 @@ static void render_os(const dc_state *s, const dc_gfx *g)
         }
     }
 
-    /* footer: OS name | CPU fan | total (CPU + GPU) power, right-aligned */
+    /* footer: CPU fan | GPU fan | total (CPU + GPU) power, right-aligned.
+       "CPU FAN 1180rpm" is 15 chars = 90px, so the fans sit at x=8 and x=128
+       and "PWR 298W" (48px) still fits on the right. */
     g->fill_rect(0, DC_H - 14, DC_W, 14, C_PANEL);
-    fit(buf, sizeof buf, dc_get(s, "OS"), 26);
+    fan_text(buf, sizeof buf, "CPU FAN", fan);
     g->draw_text(8, DC_H - 11, buf, C_DIM, C_PANEL, 1);
-    if (fan > 0) {
-        snprintf(buf, sizeof buf, "FAN %drpm", fan);
-        g->draw_text(170, DC_H - 11, buf, C_DIM, C_PANEL, 1);
+    if (*gpu) {
+        fan_text(buf, sizeof buf, "GPU FAN", gfan);
+        g->draw_text(128, DC_H - 11, buf, C_DIM, C_PANEL, 1);
     }
     if (cpuw >= 0 || gpuw >= 0) {
         snprintf(buf, sizeof buf, "PWR %dW", (cpuw > 0 ? cpuw : 0) + (gpuw > 0 ? gpuw : 0));

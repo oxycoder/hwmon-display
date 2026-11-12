@@ -35,6 +35,7 @@ type reading struct {
 	gpuMemUsed   int
 	gpuMemTotal  int
 	gpuPower     int    // board power, W
+	gpuFan       int    // RPM, 0 = none
 	cpuPower     int    // package power, W
 	src          string // which sources contributed, for the tray/status line
 }
@@ -59,6 +60,9 @@ func gpuInfo() string {
 	}
 	if r.gpuPower >= 0 {
 		parts = append(parts, "GPU_W="+strconv.Itoa(r.gpuPower))
+	}
+	if r.gpuFan > 0 {
+		parts = append(parts, "GPU_FAN="+strconv.Itoa(r.gpuFan))
 	}
 	if r.gpuMemUsed >= 0 && r.gpuMemTotal > 0 {
 		parts = append(parts, "VRAM_USED_MB="+strconv.Itoa(r.gpuMemUsed), "VRAM_MB="+strconv.Itoa(r.gpuMemTotal))
@@ -158,6 +162,9 @@ func collect() reading {
 	if r.gpuPower < 0 {
 		r.gpuPower = l.gpuPower
 	}
+	if r.gpuFan == 0 {
+		r.gpuFan = l.gpuFan
+	}
 	r.src = strings.Join(srcs, "+")
 	return r
 }
@@ -194,6 +201,7 @@ func wmiSample() reading {
 		r.gpuLoad, r.gpuMemUsed = gpuPerf()
 		r.gpuTemp = gpuVendorTemp()
 		r.gpuPower = gpuVendorPower()
+		r.gpuFan = gpuVendorFan()
 	}
 	// The ASUS path can reach the CPU's own Tctl, which beats an ACPI zone.
 	if t, die := asusCPUTemp(); die || (t >= 0 && r.cpuTemp < 0) {

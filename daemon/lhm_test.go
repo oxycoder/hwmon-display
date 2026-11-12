@@ -186,3 +186,37 @@ func TestTctlOf(t *testing.T) {
 		}
 	}
 }
+
+// fans builds a hardware node with one "Fans" group.
+func fans(text, hwid, img string, sensors ...string) lhmNode {
+	g := lhmNode{Text: "Fans"}
+	for i := 0; i+1 < len(sensors); i += 2 {
+		g.Children = append(g.Children, lhmNode{Text: sensors[i], Value: sensors[i+1]})
+	}
+	return lhmNode{Text: text, HardwareId: hwid, ImageURL: img, Children: []lhmNode{g}}
+}
+
+// TestLHMGPUFan: the GPU fan comes from the GPU node's own Fans group, and
+// the CPU-fan fallback (no fan labelled "CPU") never borrows it.
+func TestLHMGPUFan(t *testing.T) {
+	board := fans("Nuvoton NCT6798D", "/lpc/nct6798d/0", "images_icon/chip.png", "Fan #1", "0 RPM", "Fan #2", "860 RPM")
+	gpu := fans("AMD Radeon RX 5600 XT", "/gpu-amd/0", "images_icon/ati.png", "GPU Fan", "1,750 RPM")
+	root := lhmNode{Text: "Sensor", Children: []lhmNode{{Text: "TUNG", Children: []lhmNode{gpu, board}}}}
+
+	var r lhmReading
+	findGPU(&root, &r)
+	if r.gpuFan != 1750 {
+		t.Errorf("gpuFan = %d, want 1750", r.gpuFan)
+	}
+	if got := findFan(&root); got != 860 { // GPU node listed first, but its fan is not the CPU fan
+		t.Errorf("fan = %d, want 860 (Fan #2, not GPU Fan)", got)
+	}
+
+	// A GPU without a Fans group (or a stopped fan): 0, not -1.
+	root.Children[0].Children = []lhmNode{fans("NVIDIA GeForce RTX 4070", "/gpu-nvidia/0", "images_icon/nvidia.png", "GPU Fan", "0 RPM")}
+	r = lhmReading{}
+	findGPU(&root, &r)
+	if r.gpuFan != 0 {
+		t.Errorf("gpuFan (stopped) = %d, want 0", r.gpuFan)
+	}
+}

@@ -40,6 +40,7 @@ type lhmReading struct {
 	gpuMemUsed   int
 	gpuMemTotal  int
 	gpuPower     int // board power, W
+	gpuFan       int // RPM, 0 = none
 	cpuPower     int // package power, W
 	at           time.Time
 }
@@ -242,7 +243,8 @@ func tempOf(n *lhmNode, prefs []string) int {
 	return -1
 }
 
-// findFan: a fan labelled "CPU" if there is one, else the first spinning fan.
+// findFan: a fan labelled "CPU" if there is one, else the first spinning fan
+// that is not the GPU's (that one has its own slot on the display).
 func findFan(root *lhmNode) int {
 	var fans []lhmNode
 	collectFans(root, &fans)
@@ -252,7 +254,7 @@ func findFan(root *lhmNode) int {
 		}
 	}
 	for _, f := range fans {
-		if v := numOf(f.Value); v > 0 {
+		if v := numOf(f.Value); v > 0 && !strings.Contains(strings.ToUpper(f.Text), "GPU") {
 			return v
 		}
 	}
@@ -295,6 +297,20 @@ func findGPU(root *lhmNode, out *lhmReading) {
 	// AMD's PPT limit sensor and the core rail only when nothing else is there.
 	out.gpuPower = powerOf(gpuNode, []string{"GPU Package", "GPU Power", "GPU PPT", "GPU Core"})
 	out.gpuMemUsed, out.gpuMemTotal = gpuMemOf(gpuNode)
+	out.gpuFan = gpuFanOf(gpuNode)
+}
+
+// gpuFanOf: the first spinning fan in the GPU node's own "Fans" group
+// ("GPU Fan", "GPU Fan 1" ...), in RPM; 0 when there is none.
+func gpuFanOf(gpuNode *lhmNode) int {
+	var fans []lhmNode
+	collectFans(gpuNode, &fans)
+	for _, f := range fans {
+		if v := numOf(f.Value); v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func walkGPU(n *lhmNode, found **lhmNode) {

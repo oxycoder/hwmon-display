@@ -2,10 +2,11 @@
 
 package main
 
-// GPU temperature and board power from the vendor's own driver library: AMD's
-// ADL (atiadlxx.dll) or NVIDIA's NVML (nvml.dll). Both are installed by the
-// display driver itself, so nothing extra has to run. When neither loads,
-// or the adapter answers nothing sensible, the readers return -1.
+// GPU temperature, board power and fan speed from the vendor's own driver
+// library: AMD's ADL (atiadlxx.dll) or NVIDIA's NVML (nvml.dll). Both are
+// installed by the display driver itself, so nothing extra has to run. When
+// neither loads, or the adapter answers nothing sensible, the readers return
+// -1 (fan: 0).
 
 import (
 	"encoding/binary"
@@ -21,15 +22,16 @@ var (
 	vendorOnce     sync.Once
 	vendorTemp     func() int
 	vendorPower    func() int
+	vendorFan      func() int
 )
 
-// vendorInit binds the temperature and power readers once: ADL first, NVML
-// when no AMD adapter answered.
+// vendorInit binds the temperature, power and fan readers once: ADL first,
+// NVML when no AMD adapter answered.
 func vendorInit() {
 	vendorOnce.Do(func() {
-		vendorTemp, vendorPower = adlInit()
-		if vendorTemp == nil && vendorPower == nil {
-			vendorTemp, vendorPower = nvmlInit()
+		vendorTemp, vendorPower, vendorFan = adlInit()
+		if vendorTemp == nil && vendorPower == nil && vendorFan == nil {
+			vendorTemp, vendorPower, vendorFan = nvmlInit()
 		}
 	})
 }
@@ -52,7 +54,21 @@ func gpuVendorPower() int {
 	return vendorPower()
 }
 
+// gpuVendorFan: GPU fan speed in RPM from the driver library, or 0. NVML only
+// reports a percentage, so NVIDIA fans come from LibreHardwareMonitor instead.
+func gpuVendorFan() int {
+	vendorInit()
+	if vendorFan == nil {
+		return 0
+	}
+	if v := vendorFan(); v > 0 {
+		return v
+	}
+	return 0
+}
+
 func plausibleWatts(w int) bool { return w > 0 && w < 2000 }
+func plausibleRPM(r int) bool   { return r > 0 && r < 10000 }
 
 // systemDLL loads a DLL from System32 only, never from the working directory.
 func systemDLL(name string) *syscall.LazyDLL {
@@ -80,16 +96,18 @@ const (
 	pmlogTempHotspot = 27
 	pmlogAsicPower   = 23 // whole-board power, W (what the driver calls "GPU Package")
 	pmlogGfxPower    = 30 // graphics core rail only, W
+	pmlogFanRPM      = 14
 	pmlogSensors     = 256
 )
 
-// adlInit returns temperature and power readers bound to the first AMD
+// adlInit returns temperature, power and fan readers bound to the first AMD
 // adapter that answers, trying the Navi+ PMLog API, then Overdrive N / 6 / 5
-// for temperature and Overdrive 6 for power. Either reader may be nil.
-func adlInit() (temp, power func() int) {
+// for temperature, Overdrive 6 for power and Overdrive 5 for the fan. Any
+// reader may be nil.
+func adlInit() (temp, power, fan func() int) {
 	adl := systemDLL("atiadlxx.dll")
 	if adl.Load() != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	proc := func(n string) *syscall.LazyProc {
 		p := adl.NewProc(n)
@@ -100,7 +118,7 @@ func adlInit() (temp, power func() int) {
 	}
 	create, count, info := proc("ADL2_Main_Control_Create"), proc("ADL2_Adapter_NumberOfAdapters_Get"), proc("ADL2_Adapter_AdapterInfo_Get")
 	if create == nil || count == nil || info == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// ADL wants a malloc callback even when we hand it our own buffers.
 	cb := syscall.NewCallback(func(size uintptr) uintptr {
@@ -109,20 +127,21 @@ func adlInit() (temp, power func() int) {
 	})
 	var ctx uintptr
 	if r, _, _ := create.Call(cb, 1, uintptr(unsafe.Pointer(&ctx))); int32(r) != adlOK || ctx == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var n int32
 	if r, _, _ := count.Call(ctx, uintptr(unsafe.Pointer(&n))); int32(r) != adlOK || n <= 0 || n > 256 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	infos := make([]byte, int(n)*adlAdapterInfoSize)
 	if r, _, _ := info.Call(ctx, uintptr(unsafe.Pointer(&infos[0])), uintptr(len(infos))); int32(r) != adlOK {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	pmlog, odn, od6, od5 := proc("ADL2_New_QueryPMLogData_Get"), proc("ADL2_OverdriveN_Temperature_Get"),
 		proc("ADL2_Overdrive6_Temperature_Get"), proc("ADL2_Overdrive5_Temperature_Get")
 	od6Power := proc("ADL2_Overdrive6_CurrentPower_Get")
+	od5Fan := proc("ADL2_Overdrive5_FanSpeed_Get")
 
 	// pmlogValue: the first of the given sensors that the adapter supports and
 	// reports above zero. ADLPMLogDataOutput { int size; struct { int supported, value; } sensors[256]; }
@@ -189,9 +208,23 @@ func adlInit() (temp, power func() int) {
 			return int(p >> 8)
 		},
 	}
+	fanReaders := []func(idx int32) int{
+		func(idx int32) int { return pmlogValue(idx, pmlogFanRPM) },
+		func(idx int32) int { // ADLFanSpeedValue { int iSize, iSpeedType, iFanSpeed, iFlags }; controller 0, type 2 = RPM
+			if od5Fan == nil {
+				return -1
+			}
+			var f [4]int32
+			f[0], f[1] = 16, 2
+			if r, _, _ := od5Fan.Call(ctx, uintptr(idx), 0, uintptr(unsafe.Pointer(&f[0]))); int32(r) != adlOK {
+				return -1
+			}
+			return int(f[2])
+		},
+	}
 
 	// One AdapterInfo per display output; dedupe physical GPUs by bus number.
-	// The first adapter that answers either question provides both readers.
+	// The first adapter that answers any question provides all the readers.
 	seenBus := map[int32]bool{}
 	for i := 0; i < int(n); i++ {
 		a := infos[i*adlAdapterInfoSize:]
@@ -203,11 +236,12 @@ func adlInit() (temp, power func() int) {
 		idx := int32(binary.LittleEndian.Uint32(a[4:])) // iAdapterIndex
 		temp = bindReader(readers, idx, plausibleTemp)
 		power = bindReader(powerReaders, idx, plausibleWatts)
-		if temp != nil || power != nil {
-			return temp, power
+		fan = bindReader(fanReaders, idx, plausibleRPM)
+		if temp != nil || power != nil || fan != nil {
+			return temp, power, fan
 		}
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 // bindReader picks the first reader that currently gives a plausible value
@@ -228,22 +262,22 @@ func bindReader(readers []func(idx int32) int, idx int32, plausible func(int) bo
 
 // ---------- NVIDIA NVML ----------------------------------------------------------
 
-func nvmlInit() (temp, power func() int) {
+func nvmlInit() (temp, power, fan func() int) {
 	nvml := systemDLL("nvml.dll")
 	if nvml.Load() != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	initp, byIndex, getTemp := nvml.NewProc("nvmlInit_v2"), nvml.NewProc("nvmlDeviceGetHandleByIndex_v2"), nvml.NewProc("nvmlDeviceGetTemperature")
 	getPower := nvml.NewProc("nvmlDeviceGetPowerUsage")
 	if initp.Find() != nil || byIndex.Find() != nil || getTemp.Find() != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if r, _, _ := initp.Call(); r != 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var dev uintptr
 	if r, _, _ := byIndex.Call(0, uintptr(unsafe.Pointer(&dev))); r != 0 || dev == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	temp = func() int {
 		var t uint32
@@ -266,5 +300,5 @@ func nvmlInit() (temp, power func() int) {
 			return w
 		}
 	}
-	return temp, power
+	return temp, power, nil // nvmlDeviceGetFanSpeed is a percentage, not RPM
 }
